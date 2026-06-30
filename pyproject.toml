@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyling"
+version = "0.1.0"
+description = "Python implementation of the Eyeling Notation3 reasoner"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Generated port of Eyeling"}]
+keywords = ["Notation3", "N3", "reasoner", "RDF", "RDF 1.2", "RDF Message"]
+dependencies = ["rdflib>=7.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+conformance = ["pytest>=7"]
+
+[project.scripts]
+pyling = "pyling.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pyling*"]
