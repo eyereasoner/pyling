@@ -47,6 +47,15 @@ INFERENCE_FUSE_EXIT_CODE = 65
 Subst = dict[str, Term]
 
 
+@dataclass(slots=True)
+class _AgendaEntry:
+    rule: Rule
+    rule_index: int
+    goal: Triple
+    s_key: Term | None
+    o_key: Term | None
+
+
 class InferenceFuseError(RuntimeError):
     def __init__(self, message: str = "inference fuse derived false") -> None:
         super().__init__(message)
@@ -89,12 +98,28 @@ class Engine:
         self.prefixes = doc.prefixes
         self.facts: list[Triple] = list(doc.triples)
         self._fact_set: set[Triple] = set(doc.triples)
+        self._facts_by_pred: dict[Term, list[Triple]] = {}
+        self._facts_by_ps: dict[tuple[Term, Term], list[Triple]] = {}
+        self._facts_by_po: dict[tuple[Term, Term], list[Triple]] = {}
+        self._var_pred_facts: list[Triple] = []
+        for _tr in self.facts:
+            self._index_fact(_tr)
+        self._indexed_facts_obj_id = id(self.facts)
+        self._indexed_facts_len = len(self.facts)
         self.derived: list[Triple] = []
         self.forward_rules: list[Rule] = list(doc.forward_rules)
         self.backward_rules: list[Rule] = list(doc.backward_rules)
         self.query_rules: list[Rule] = list(doc.query_rules)
+        self._rule_key_cache: dict[Rule, str] = {}
         self._rule_ids: set[str] = {self._rule_key(r) for r in self.forward_rules + self.backward_rules}
         self._fired_rule_bindings: set[str] = set()
+        self._agenda_active = False
+        self._agenda_queue: list[Triple] = []
+        self._agenda_indexed_rules: set[Rule] = set()
+        self._agenda_by_pred: dict[Term, list[_AgendaEntry]] = {}
+        self._agenda_by_ps: dict[tuple[Term, Term], list[_AgendaEntry]] = {}
+        self._agenda_by_po: dict[tuple[Term, Term], list[_AgendaEntry]] = {}
+        self._agenda_all_entries: list[_AgendaEntry] = []
         self._fresh_counter = 0
         self._std_counter = 0
         self.max_depth = int(self.options.get("max_depth", self.options.get("maxDepth", 128)))
@@ -106,19 +131,101 @@ class Engine:
         return term_to_n3(term, self.prefixes)
 
     def _rule_key(self, r: Rule) -> str:
-        return json.dumps({
+        cached = getattr(self, "_rule_key_cache", {}).get(r)
+        if cached is not None:
+            return cached
+        key = json.dumps({
             "p": [triple_to_primitive(t) for t in r.premise],
             "c": [triple_to_primitive(t) for t in r.conclusion],
             "f": r.is_forward,
             "x": r.is_fuse,
         }, sort_keys=True, default=str)
+        if hasattr(self, "_rule_key_cache"):
+            self._rule_key_cache[r] = key
+        return key
+
+    def _lookup_key(self, term: Term) -> Term | None:
+        """Return an exact-match index key, or None when broad unification is needed."""
+        term = self.deref(term, {})
+        if isinstance(term, Var) or isinstance(term, OpenListTerm):
+            return None
+        if isinstance(term, Literal):
+            # Literal unification performs datatype normalization, so an exact
+            # dataclass key could miss equivalent lexical forms. Keep literals
+            # on the predicate bucket unless another position is indexable.
+            return None
+        if isinstance(term, ListTerm):
+            return term if all(self._lookup_key(e) is not None for e in term.elems) else None
+        if isinstance(term, GraphTerm):
+            return None
+        return term
+
+    def _index_fact(self, tr: Triple) -> None:
+        if isinstance(tr.p, Var):
+            self._var_pred_facts.append(tr)
+            return
+        self._facts_by_pred.setdefault(tr.p, []).append(tr)
+        sk = self._lookup_key(tr.s)
+        if sk is not None:
+            self._facts_by_ps.setdefault((tr.p, sk), []).append(tr)
+        ok = self._lookup_key(tr.o)
+        if ok is not None:
+            self._facts_by_po.setdefault((tr.p, ok), []).append(tr)
+
+    def _rebuild_fact_indexes(self) -> None:
+        self._facts_by_pred.clear()
+        self._facts_by_ps.clear()
+        self._facts_by_po.clear()
+        self._var_pred_facts.clear()
+        for tr in self.facts:
+            self._index_fact(tr)
+        self._indexed_facts_obj_id = id(self.facts)
+        self._indexed_facts_len = len(self.facts)
+
+    def _ensure_fact_indexes_current(self) -> None:
+        # Some log:* built-ins temporarily replace engine.facts with a scoped
+        # formula's triples. Rebuild the lookup tables when that happens.
+        if id(self.facts) != self._indexed_facts_obj_id or len(self.facts) != self._indexed_facts_len:
+            self._rebuild_fact_indexes()
+
+    def _candidate_facts(self, goal: Triple) -> Iterable[Triple]:
+        self._ensure_fact_indexes_current()
+        if isinstance(goal.p, Var):
+            return list(self.facts)
+        candidates: list[list[Triple]] = []
+        pred_bucket = self._facts_by_pred.get(goal.p)
+        if pred_bucket is not None:
+            candidates.append(pred_bucket)
+        sk = self._lookup_key(goal.s)
+        if sk is not None:
+            bucket = self._facts_by_ps.get((goal.p, sk))
+            if bucket is not None:
+                candidates.append(bucket)
+        ok = self._lookup_key(goal.o)
+        if ok is not None:
+            bucket = self._facts_by_po.get((goal.p, ok))
+            if bucket is not None:
+                candidates.append(bucket)
+        if not candidates:
+            base: list[Triple] = []
+        else:
+            base = min(candidates, key=len)
+        if not self._var_pred_facts:
+            return base
+        return list(base) + self._var_pred_facts
 
     def add_fact(self, tr: Triple, inferred: bool = True) -> bool:
         # owl:differentFrom self is false in Eyeling style tests only when queried through sameAs? Keep as normal fact.
         if tr in self._fact_set:
             return False
         self._fact_set.add(tr)
+        self._ensure_fact_indexes_current()
         self.facts.append(tr)
+        self._index_fact(tr)
+        self._indexed_facts_len = len(self.facts)
+        self._indexed_facts_obj_id = id(self.facts)
+        if self._agenda_active:
+            self._agenda_queue.append(tr)
         if inferred:
             self.derived.append(tr)
         if isinstance(tr.p, Iri) and isinstance(tr.s, GraphTerm) and isinstance(tr.o, GraphTerm):
@@ -147,6 +254,125 @@ class Engine:
             self.backward_rules.append(rule)
         return True
 
+    def _term_contains_blank(self, term: Term) -> bool:
+        if isinstance(term, Blank):
+            return True
+        if isinstance(term, ListTerm):
+            return any(self._term_contains_blank(e) for e in term.elems)
+        if isinstance(term, OpenListTerm):
+            return any(self._term_contains_blank(e) for e in term.prefix)
+        if isinstance(term, GraphTerm):
+            return any(
+                self._term_contains_blank(tr.s)
+                or self._term_contains_blank(tr.p)
+                or self._term_contains_blank(tr.o)
+                for tr in term.triples
+            )
+        return False
+
+    def _rule_has_head_blanks(self, rule: Rule) -> bool:
+        return any(
+            self._term_contains_blank(tr.s)
+            or self._term_contains_blank(tr.p)
+            or self._term_contains_blank(tr.o)
+            for tr in rule.conclusion
+        )
+
+    def _is_fast_single_premise_rule(self, rule: Rule) -> bool:
+        if rule.is_fuse or len(rule.premise) != 1:
+            return False
+        if self.backward_rules:
+            # A backward rule may prove the premise without an extensional fact.
+            # Keep that case on the complete, generic solver path.
+            return False
+        if self._rule_has_head_blanks(rule):
+            # Preserve legacy blank-node allocation order for existential heads.
+            return False
+        goal = rule.premise[0]
+        if not isinstance(goal.p, Iri):
+            return False
+        return get_builtin(goal.p.value) is None
+
+    def _add_agenda_entry(self, entry: _AgendaEntry) -> None:
+        p = entry.goal.p
+        self._agenda_all_entries.append(entry)
+        if entry.s_key is None and entry.o_key is None:
+            self._agenda_by_pred.setdefault(p, []).append(entry)
+        if entry.s_key is not None:
+            self._agenda_by_ps.setdefault((p, entry.s_key), []).append(entry)
+        if entry.o_key is not None:
+            self._agenda_by_po.setdefault((p, entry.o_key), []).append(entry)
+
+    def _build_single_premise_agenda(self) -> None:
+        self._agenda_indexed_rules.clear()
+        self._agenda_by_pred.clear()
+        self._agenda_by_ps.clear()
+        self._agenda_by_po.clear()
+        self._agenda_all_entries.clear()
+        for i, rule in enumerate(self.forward_rules):
+            if not self._is_fast_single_premise_rule(rule):
+                continue
+            goal = rule.premise[0]
+            entry = _AgendaEntry(rule, i, goal, self._lookup_key(goal.s), self._lookup_key(goal.o))
+            self._agenda_indexed_rules.add(rule)
+            self._add_agenda_entry(entry)
+
+    def _agenda_candidates_for_fact(self, fact: Triple) -> list[_AgendaEntry]:
+        if isinstance(fact.p, Var):
+            # Rare: a variable-predicate fact can unify with many rule premises.
+            return list(self._agenda_all_entries)
+        buckets: list[list[_AgendaEntry]] = []
+        broad = self._agenda_by_pred.get(fact.p)
+        if broad:
+            buckets.append(broad)
+        sk = self._lookup_key(fact.s)
+        if sk is not None:
+            bucket = self._agenda_by_ps.get((fact.p, sk))
+            if bucket:
+                buckets.append(bucket)
+        ok = self._lookup_key(fact.o)
+        if ok is not None:
+            bucket = self._agenda_by_po.get((fact.p, ok))
+            if bucket:
+                buckets.append(bucket)
+        out: list[_AgendaEntry] = []
+        seen_rules: set[Rule] = set()
+        for bucket in buckets:
+            for entry in bucket:
+                if entry.rule in seen_rules:
+                    continue
+                seen_rules.add(entry.rule)
+                out.append(entry)
+        return out
+
+    def _fire_agenda_rule(self, entry: _AgendaEntry, fact: Triple) -> bool:
+        subst = self.unify_triple(entry.goal, fact, {})
+        if subst is None:
+            return False
+        firing_key = self._firing_key(entry.rule, subst)
+        if firing_key in self._fired_rule_bindings:
+            return False
+        self._fired_rule_bindings.add(firing_key)
+        changed = False
+        for head in entry.rule.conclusion:
+            out = self.apply_subst_triple(head, subst, ground_blanks=False)
+            if self.add_fact(out, inferred=True):
+                changed = True
+        return changed
+
+    def _drain_single_premise_agenda(self) -> bool:
+        changed = False
+        index = 0
+        while index < len(self._agenda_queue):
+            fact = self._agenda_queue[index]
+            index += 1
+            for entry in self._agenda_candidates_for_fact(fact):
+                if self._fire_agenda_rule(entry, fact):
+                    changed = True
+        # All queued facts have been processed against the current agenda index.
+        del self._agenda_queue[:index]
+        return changed
+
     def run(self) -> ReasonStreamResult:
         # Top-level log:implies facts are live rules immediately.
         for tr in list(self.facts):
@@ -155,10 +381,19 @@ class Engine:
                     self.add_rule(Rule(tr.s.triples, tr.o.triples, True))
                 elif tr.p.value == LOG_IMPLIED_BY:
                     self.add_rule(Rule(tr.s.triples, tr.o.triples, False))
+        self._build_single_premise_agenda()
+        self._agenda_active = bool(self._agenda_indexed_rules)
+        if self._agenda_active:
+            self._agenda_queue = list(self.facts)
+            self._drain_single_premise_agenda()
+
         # Validate immediate sameAs reflexivity facts are usable. No full OWL closure is intended.
         for iteration in range(self.max_iterations):
             changed = False
-            rules_snapshot = list(self.forward_rules)
+            # Rules not covered by the agenda still use the complete solver. This
+            # preserves general N3 behavior while avoiding O(rules * facts * depth)
+            # scans for the common single-premise Horn-chain case.
+            rules_snapshot = [r for r in self.forward_rules if r not in self._agenda_indexed_rules]
             for rule in rules_snapshot:
                 if rule.is_fuse:
                     if any(True for _ in self.solve(list(rule.premise), {})):
@@ -173,6 +408,8 @@ class Engine:
                         fact = self.apply_subst_triple(head, subst, ground_blanks=True)
                         if self.add_fact(fact, inferred=True):
                             changed = True
+            if self._agenda_active and self._agenda_queue:
+                changed = self._drain_single_premise_agenda() or changed
             if not changed:
                 break
         else:
@@ -244,8 +481,9 @@ class Engine:
                     nxt = self.unify_triple(first, Triple(collection, first.p, obj), subst)
                     if nxt is not None:
                         yield from self.solve(rest, nxt, depth + 1)
-        # Facts.
-        for fact in list(self.facts):
+        # Facts. Use predicate/position indexes when the selected goal has
+        # ground components; this is essential for large rule sets.
+        for fact in list(self._candidate_facts(first)):
             nxt = self.unify_triple(first, fact, subst)
             if nxt is not None:
                 yield from self.solve(rest, nxt, depth + 1)
