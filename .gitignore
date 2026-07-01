@@ -52,6 +52,8 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+.rdf-test-suite-cache/
+node_modules/
 
 # Translations
 *.mo

@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -17,3 +18,28 @@ def test_notation3tests_runner_is_present():
     if os.environ.get("NOTATION3TESTS_DIR"):
         proc = subprocess.run([sys.executable, str(runner), os.environ["NOTATION3TESTS_DIR"]], cwd=str(root), text=True, capture_output=True)
         assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_rdf_test_suite_bridge_reports_syntax_success_and_failure():
+    root = Path(__file__).resolve().parents[1]
+    bridge = root / "spec" / "parse.py"
+
+    valid = json.dumps({
+        "data": "<http://example/s> <http://example/p> <http://example/o> .",
+        "format": "n-triples",
+        "baseIRI": "http://example/base",
+    })
+    proc = subprocess.run(
+        [sys.executable, str(bridge)], cwd=str(root), input=valid, text=True, capture_output=True
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    invalid = json.dumps({
+        "data": "<relative> <http://example/p> <http://example/o> .",
+        "format": "n-triples",
+        "baseIRI": "http://example/base",
+    })
+    proc = subprocess.run(
+        [sys.executable, str(bridge)], cwd=str(root), input=invalid, text=True, capture_output=True
+    )
+    assert proc.returncode != 0

@@ -145,6 +145,18 @@ Run the bundled offline RDF 1.2 smoke suite:
 python tools/run_rdf12_w3c.py
 ```
 
+Run the W3C RDF 1.2 syntax compliance manifests (requires Node.js and network
+access on the first run):
+
+```bash
+npm ci
+npm run spec
+```
+
+The W3C runner caches downloaded manifests and fixtures in
+`.rdf-test-suite-cache/`. All RDF 1.2 syntax cases in the configured N-Triples,
+N-Quads, Turtle, and TriG manifests are enabled.
+
 ## RDF Message Logs
 
 Whole-log replay:
@@ -250,13 +262,20 @@ Run the offline RDF 1.2 compatibility smoke suite:
 python tools/run_rdf12_w3c.py
 ```
 
+Run the W3C RDF 1.2 compliance tests:
+
+```bash
+npm ci
+npm run spec
+```
+
 Run the external `phochste/notation3tests` suite when you have network access or an existing checkout:
 
 ```bash
 # Existing checkout
 python tools/run_notation3tests.py /path/to/notation3tests
 
-# Or let the runner clone the public suite at https://codeberg.org/phochste/notation3tests
+# Or let the runner clone and install the public suite at https://codeberg.org/phochste/notation3tests
 python tools/run_notation3tests.py --clone
 ```
 

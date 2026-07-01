@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Lightweight RDF 1.2 syntax conformance smoke runner.
 
-For the full W3C manifest suite, install the W3C/rdf-test-suite CLI and run it
-against a wrapper that calls `pyling.rdf.parse_rdf_text`. This script keeps a
-small offline-positive/negative subset in the repository so CI can exercise the
-same compatibility layer without network access.
+Run ``npm ci && npm run spec`` for the W3C RDF 1.2 manifests. This script keeps
+a small offline positive/negative subset in the repository for quick checks
+without Node.js or network access.
 """
 from __future__ import annotations
 

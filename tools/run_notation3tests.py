@@ -68,6 +68,14 @@ def main(argv: list[str] | None = None) -> int:
         suite = tmp / "notation3tests"
         code = run(["git", "clone", "--depth", "1", REPO, str(suite)])
         if code:
+            if not ns.keep:
+                shutil.rmtree(tmp, ignore_errors=True)
+            return code
+        install = ["npm", "ci"] if (suite / "package-lock.json").exists() else ["npm", "install"]
+        code = run(install, cwd=suite)
+        if code:
+            if not ns.keep:
+                shutil.rmtree(tmp, ignore_errors=True)
             return code
     elif ns.suite:
         suite = Path(ns.suite).resolve()

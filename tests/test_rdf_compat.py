@@ -1,9 +1,12 @@
 import pytest
 
 from pyling import (
+    GraphTerm,
+    Literal,
     RdfSyntaxError,
     assert_rdf12_surface_syntax,
     parse_rdf_message_log,
+    parse_rdf_text,
     reason,
     reason_message_stream,
 )
@@ -75,3 +78,66 @@ def test_rdf12_surface_checks_reject_bad_line_syntax():
         assert_rdf12_surface_syntax('<//example/s> <http://example/p> <http://example/o> .', format="nt")
     with pytest.raises(RdfSyntaxError):
         assert_rdf12_surface_syntax('<http://example/s> <http://example/p> "x"@cantbethislong .', format="nt")
+
+
+def test_rdf12_versions_annotations_and_reifiers_parse():
+    doc = parse_rdf_text(
+        '''VERSION "1.2"
+PREFIX : <http://example/>
+:s :p :o ~:statement {| :source :sensor |} .
+:x :p << :s :p :o ~ :statement >> .
+''',
+        format="turtle",
+    )
+    assert any(getattr(tr.s, "value", None) == "http://example/s" for tr in doc.triples)
+    assert any(getattr(tr.s, "value", None) == "http://example/x" for tr in doc.triples)
+
+
+def test_rdf12_nested_triple_terms_and_direction_tags_parse_in_line_syntaxes():
+    doc = parse_rdf_text(
+        '<http://example/s><http://example/p><<(<http://example/a><http://example/b>'
+        '<<( <http://example/c> <http://example/d> "Hello"@en--ltr )>>)>>.',
+        format="n-triples",
+    )
+    outer = doc.triples[0].o
+    assert isinstance(outer, GraphTerm)
+    assert isinstance(outer.triples[0].o, GraphTerm)
+    nested_literal = outer.triples[0].o.triples[0].o
+    assert isinstance(nested_literal, Literal)
+    assert nested_literal.lang == "en"
+
+
+def test_rdf12_trig_triple_constructs_parse_inside_named_graphs():
+    doc = parse_rdf_text(
+        '''PREFIX : <http://example/>
+:G {
+  :s :p :o .
+  << :s :p :o >> :q <<( :a :b :c )>> .
+  :x :p :o ~ {| :source :sensor |} .
+}
+''',
+        format="trig",
+    )
+    assert doc.triples
+
+
+@pytest.mark.parametrize(
+    "text,fmt",
+    [
+        ('<http://example/s> <http://example/p> << <http://a> <http://b> <http://c> >> .', "n-triples"),
+        ('PREFIX : <http://example/>\n<< "literal" :p :o >> :q :z .', "turtle"),
+        ('PREFIX : <http://example/>\n:s :p :o {| :a :b :c |} .', "turtle"),
+        ('@version "1.2"', "turtle"),
+    ],
+)
+def test_rdf12_rejects_invalid_new_syntax(text, fmt):
+    with pytest.raises(RdfSyntaxError):
+        parse_rdf_text(text, format=fmt)
+
+
+def test_rdf12_normalization_does_not_change_literal_content():
+    doc = parse_rdf_text(
+        '<http://example/s><http://example/p> ">< @en--ltr" .',
+        format="n-triples",
+    )
+    assert doc.triples[0].o == Literal(">< @en--ltr")
