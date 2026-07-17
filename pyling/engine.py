@@ -571,13 +571,29 @@ class Engine:
     # ------------------------------------------------------------------
     # Solving and unification
     # ------------------------------------------------------------------
-    def solve(self, goals: list[Triple], subst: Subst, depth: int = 0) -> Iterator[Subst]:
+    def solve(self, goals: list[Triple], subst: Subst, depth: int = 0, allow_reorder: bool = True) -> Iterator[Subst]:
         if depth > self.max_depth:
             return
         if not goals:
             yield dict(subst)
             return
-        selected = min(range(len(goals)), key=lambda index: self._goal_rank(goals[index], subst))
+        # Dynamic "most-bound goal first" reordering (_goal_rank) is only
+        # applied to the outermost conjunction (forward-rule premises, and
+        # top-level queries): that conjunction is written by the rule author
+        # in no particular guaranteed order, and reordering it is safe since
+        # it can't affect *which* solutions exist, only how fast they're
+        # found. Backward rule (`<=`) bodies are always walked strictly left
+        # to right instead - once inside one, `allow_reorder` is forced False
+        # for the whole (now-combined) remaining goal list. Mirrors the
+        # Eyeling JS reference engine's `canDeferBuiltins` handling, which is
+        # deliberately disabled for backward rules "to preserve termination"
+        # on recursive backward predicates; it also sidesteps recomputing
+        # _goal_rank for every pending goal at every step, which dominated
+        # runtime on rule sets with many chained backward rules.
+        if allow_reorder:
+            selected = min(range(len(goals)), key=lambda index: self._goal_rank(goals[index], subst))
+        else:
+            selected = 0
         first = self.apply_subst_triple(goals[selected], subst)
         rest = goals[:selected] + goals[selected + 1:]
         # Builtins first when predicate is ground IRI.
@@ -586,7 +602,7 @@ class Engine:
             if handler is not None:
                 ctx = BuiltinContext(first, subst, self)
                 for nxt in handler(ctx):
-                    yield from self.solve(rest, nxt, depth + 1)
+                    yield from self.solve(rest, nxt, depth + 1, allow_reorder)
                 return
             if first.p.value in {RDF_FIRST, RDF_REST}:
                 seen_lists: set[ListTerm] = set()
@@ -598,7 +614,7 @@ class Engine:
                     obj = collection.elems[0] if first.p.value == RDF_FIRST else ListTerm(collection.elems[1:])
                     nxt = self.unify_triple(first, Triple(collection, first.p, obj), subst)
                     if nxt is not None:
-                        yield from self.solve(rest, nxt, depth + 1)
+                        yield from self.solve(rest, nxt, depth + 1, allow_reorder)
         # Opt-in backward-goal memoization/tabling (see the block of helper
         # methods above `solve`). Only affects predicates the program itself
         # declared with `log:memoize true`.
@@ -610,16 +626,16 @@ class Engine:
                     for answer in memo_entry["answers"]:
                         nxt = self.unify_triple(first, answer, subst)
                         if nxt is not None:
-                            yield from self.solve(rest, nxt, depth + 1)
+                            yield from self.solve(rest, nxt, depth + 1, allow_reorder)
                     return
                 if not memo_entry["computing"]:
                     memo_entry["computing"] = True
                     try:
                         # Solve `first` in isolation so its complete answer set
                         # can be recorded, independent of `rest`.
-                        for nxt in self.solve([first], subst, depth + 1):
+                        for nxt in self.solve([first], subst, depth + 1, allow_reorder):
                             self._store_predicate_memo_answer(memo_entry, first, nxt)
-                            yield from self.solve(rest, nxt, depth + 1)
+                            yield from self.solve(rest, nxt, depth + 1, allow_reorder)
                     finally:
                         memo_entry["computing"] = False
                         if memo_entry["unsafe"]:
@@ -635,7 +651,7 @@ class Engine:
         for fact in list(self._candidate_facts(first)):
             nxt = self.unify_triple(first, fact, subst)
             if nxt is not None:
-                yield from self.solve(rest, nxt, depth + 1)
+                yield from self.solve(rest, nxt, depth + 1, allow_reorder)
         # Backward rules.
         for rule in list(self.backward_rules):
             if len(rule.premise) != 1:
@@ -651,7 +667,7 @@ class Engine:
             std = self.standardize_apart(rule)
             nxt = self.unify_triple(first, std.premise[0], subst)
             if nxt is not None:
-                yield from self.solve(list(std.conclusion) + rest, nxt, depth + 1)
+                yield from self.solve(list(std.conclusion) + rest, nxt, depth + 1, False)
 
     def _goal_rank(self, goal: Triple, subst: Subst) -> tuple[int, int]:
         pred = self.deref(goal.p, subst)
