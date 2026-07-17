@@ -272,3 +272,110 @@ def test_store_and_run_async(tmp_path):
         assert ":a :q :b ." in second.closure_n3
         await second.store.close()
     asyncio.run(scenario())
+
+
+def test_notincludes_with_blank_node_scope_fires_when_pattern_absent():
+    # Regression test: `_:scope log:notIncludes { ... }` is a common Eyeling/EYE
+    # idiom for "check against the ambient graph", using a blank node purely as
+    # a throwaway placeholder rather than a bound formula. This used to always
+    # fail silently (treated as if the pattern was always present) because only
+    # an unbound *variable* scope was special-cased.
+    out = reason("""
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+:a :p :b .
+{ :a :p ?o .
+  _:scope log:notIncludes { :a :blocked true . } .
+} => { :a :allowed ?o } .
+""")
+    assert ":a :allowed :b ." in out
+
+
+def test_notincludes_with_blank_node_scope_blocks_when_pattern_present():
+    out = reason("""
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+:a :p :b .
+:a :blocked true .
+{ :a :p ?o .
+  _:scope log:notIncludes { :a :blocked true . } .
+} => { :a :allowed ?o } .
+""")
+    assert ":a :allowed :b ." not in out
+
+
+def test_notincludes_with_ground_dummy_scope_fires_when_pattern_absent():
+    # Same idiom, but using an arbitrary ground term (e.g. `1`) instead of a
+    # blank node as the throwaway scope placeholder.
+    out = reason("""
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+:a :p :b .
+{ :a :p ?o .
+  1 log:notIncludes { :a :blocked true . } .
+} => { :a :allowed ?o } .
+""")
+    assert ":a :allowed :b ." in out
+
+
+def test_includes_with_blank_node_scope_matches_ambient_graph():
+    # A single-triple, non-nested pattern is intentionally excluded from the
+    # ambient multi-candidate search (see the `has_nested_formula` guard in
+    # `_log_includes`), so this uses a two-triple pattern to exercise the
+    # actual ambient-scope search path with a non-Var (blank node) scope.
+    out = reason("""
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+:a :p :b . :a :q :b .
+{ _:scope log:includes { :a :p ?o . :a :q ?o } . } => { :found :subject ?o } .
+""")
+    assert ":found :subject :b ." in out
+
+
+def test_log_memoize_declaration_is_stripped_and_not_emitted_as_data():
+    out = reason("""
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+@prefix math: <http://www.w3.org/2000/10/swap/math#> .
+:double log:memoize true .
+:a :n 3 .
+{ ?x :double ?y } <= { ?x :n ?v . (?v ?v) math:sum ?y . } .
+{ ?x :n ?v . ?x :double ?y . } => { ?x :hasDouble ?y . } .
+""", include_input_facts_in_closure=True)
+    assert ":a :hasDouble 6 ." in out
+    assert "log:memoize" not in out
+
+
+def test_log_memoize_backward_predicate_reused_across_multiple_forward_rules():
+    # The same memoized backward goal (`:bob :sibling ?y`) is required by two
+    # separate forward rules, exercising the cached-answer replay path. All
+    # solutions for the shared goal must still show up for both consumers.
+    out = reason("""
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+:sibling log:memoize true .
+:alice :parentOf :bob . :alice :parentOf :carol . :alice :parentOf :dave .
+{ ?x :sibling ?y } <= { :alice :parentOf ?x . :alice :parentOf ?y . ?x log:notEqualTo ?y . } .
+{ :bob :sibling ?y } => { :bob :hasSibling ?y } .
+{ :bob :sibling ?y } => { :reported :siblingOf ?y } .
+""")
+    for name in (":carol", ":dave"):
+        assert f":bob :hasSibling {name} ." in out
+        assert f":reported :siblingOf {name} ." in out
+    assert ":bob :hasSibling :bob ." not in out
+
+
+def test_log_memoize_predicate_used_inside_notincludes_check():
+    out = reason("""
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+@prefix math: <http://www.w3.org/2000/10/swap/math#> .
+:adult log:memoize true .
+:alice :age 42 . :bob :age 10 .
+{ ?x :adult true } <= { ?x :age ?age . ?age math:greaterThan 17 . } .
+{ ?x :age ?age .
+  _:scope log:notIncludes { ?x :adult true } .
+} => { ?x :isMinor true } .
+""")
+    assert ":bob :isMinor true ." in out
+    assert ":alice :isMinor true ." not in out

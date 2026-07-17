@@ -654,11 +654,6 @@ class Engine:
                 yield from self.solve(list(std.conclusion) + rest, nxt, depth + 1)
 
     def _goal_rank(self, goal: Triple, subst: Subst) -> tuple[int, int]:
-        # `unbound()` below already derefs each term as it recurses, so it is
-        # equivalent to (but far cheaper than) first materializing a fully
-        # substituted copy of the goal via apply_subst_triple: that call was
-        # allocating a brand-new term tree on every candidate-goal comparison,
-        # which dominated runtime on rule sets with many pending goals.
         pred = self.deref(goal.p, subst)
 
         def unbound(term: Term) -> int:
