@@ -639,7 +639,13 @@ def _log_includes(ctx: BuiltinContext) -> list[Subst]:
     pattern = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
     if not isinstance(pattern, GraphTerm):
         return []
-    if isinstance(scope, Var):
+    if not isinstance(scope, GraphTerm):
+        # Per Eyeling/EYE convention, any non-formula scope term -- an unbound
+        # variable, a blank node used as a throwaway placeholder (`_:scope`),
+        # or an arbitrary ground term used the same way (e.g. `1`) -- means
+        # "search the ambient knowledge base" rather than a specific quoted
+        # graph. Only bind the scope back to the matched candidate when it is
+        # actually a variable the rule body can go on to reference.
         has_nested_formula = any(isinstance(term, GraphTerm) for triple in pattern.triples for term in (triple.s, triple.p, triple.o))
         if len(pattern.triples) == 1 and not has_nested_formula:
             return []
@@ -666,14 +672,15 @@ def _log_includes(ctx: BuiltinContext) -> list[Subst]:
             for candidate in candidates:
                 ctx.engine.facts = list(candidate.triples)  # type: ignore[attr-defined]
                 for solution in ctx.engine.solve(list(pattern.triples), ctx.subst):  # type: ignore[attr-defined]
-                    bound = ctx.engine.unify_term(ctx.goal.s, candidate, solution)  # type: ignore[attr-defined]
-                    if bound is not None:
-                        results.append(bound)
+                    if isinstance(scope, Var):
+                        bound = ctx.engine.unify_term(ctx.goal.s, candidate, solution)  # type: ignore[attr-defined]
+                        if bound is not None:
+                            results.append(bound)
+                    else:
+                        results.append(solution)
         finally:
             ctx.engine.facts = old_facts  # type: ignore[attr-defined]
         return results
-    if not isinstance(scope, GraphTerm):
-        return []
     old_facts = ctx.engine.facts  # type: ignore[attr-defined]
     try:
         ctx.engine.facts = list(scope.triples)  # type: ignore[attr-defined]
@@ -687,10 +694,12 @@ def _log_not_includes(ctx: BuiltinContext) -> list[Subst]:
     pattern = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
     if not isinstance(pattern, GraphTerm):
         return []
-    if isinstance(scope, Var):
-        return [] if any(ctx.engine.solve(list(pattern.triples), ctx.subst)) else [ctx.subst]  # type: ignore[attr-defined]
     if not isinstance(scope, GraphTerm):
-        return []
+        # Same "ambient knowledge base" convention as _log_includes above:
+        # any non-formula scope (unbound variable, blank node placeholder,
+        # or dummy ground term) searches everywhere, not just a literal
+        # match against the scope term itself.
+        return [] if any(ctx.engine.solve(list(pattern.triples), ctx.subst)) else [ctx.subst]  # type: ignore[attr-defined]
     return [] if _log_includes(ctx) else [ctx.subst]
 
 

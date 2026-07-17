@@ -64,10 +64,14 @@ def main(argv: list[str] | None = None) -> int:
             "max_iterations": ns.max_iterations,
         }
         if ns.stream_messages:
-            for result in reason_message_stream(input_data, opts):
+            for result in reason_message_stream(
+                input_data,
+                include_input_facts_in_closure=opts["include_input_facts_in_closure"],
+                max_iterations=opts["max_iterations"],
+            ):
                 sys.stdout.write(result.closure_n3)
             return 0
-        out = reason(opts, input_data)
+        out = reason(input_data, **opts)
         sys.stdout.write(out)
         return 0
     except InferenceFuseError as e:

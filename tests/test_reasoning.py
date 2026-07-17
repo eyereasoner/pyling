@@ -23,7 +23,7 @@ EX = "http://example.org/"
 
 
 def test_forward_rule_basic():
-    out = reason({}, """
+    out = reason("""
 @prefix : <http://example.org/> .
 :Socrates a :Man .
 { ?x a :Man } => { ?x a :Mortal } .
@@ -33,7 +33,7 @@ def test_forward_rule_basic():
 
 
 def test_integer_before_statement_dot_and_punctuation_literal():
-    out = reason({}, '''
+    out = reason('''
 @prefix : <http://example.org/> .
 @prefix string: <http://www.w3.org/2000/10/swap/string#> .
 1 :equals 1.
@@ -43,7 +43,7 @@ def test_integer_before_statement_dot_and_punctuation_literal():
 
 
 def test_long_string_quote_runs_uchar_iris_and_exponent_form():
-    out = reason({}, r'''
+    out = reason(r'''
 @prefix : <http://example.org/> .
 <http://example.org/\u0041> :value 4.e2.
 :quoted :value """"""".
@@ -53,7 +53,7 @@ def test_long_string_quote_runs_uchar_iris_and_exponent_form():
 
 
 def test_standalone_blank_node_property_list():
-    out = reason({}, '''
+    out = reason('''
 @prefix : <http://example.org/> .
 [ [] [] ].
 {} => { :test :ok true. }.
@@ -62,7 +62,7 @@ def test_standalone_blank_node_property_list():
 
 
 def test_rule_antecedent_blanks_are_bindable_and_rdf_lists_are_preserved():
-    out = reason({}, '''
+    out = reason('''
 @prefix : <http://example.org/> .
 @prefix math: <http://www.w3.org/2000/10/swap/math#> .
 @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
@@ -73,7 +73,7 @@ def test_rule_antecedent_blanks_are_bindable_and_rdf_lists_are_preserved():
 
 
 def test_fact_unification_uses_literal_term_equality():
-    out = reason({}, '''
+    out = reason('''
 @prefix : <http://example.org/> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 :x :value 42.
@@ -83,7 +83,7 @@ def test_fact_unification_uses_literal_term_equality():
 
 
 def test_formula_local_prefix_and_iri_property_list_id():
-    out = reason({}, '''
+    out = reason('''
 @prefix : <http://example.org/> .
 :a :b :c. :c :d :e. :e :f :g.
 { @prefix local: <http://example.org/>. local:a local:b [ id local:c local:d [ id local:e local:f local:g ] ]. }
@@ -103,7 +103,7 @@ def test_existential_rule_head_fires_once_per_binding():
 
 def test_dynamic_inference_fuse_is_enforced():
     with pytest.raises(InferenceFuseError):
-        reason({}, '''
+        reason('''
 @prefix : <http://example.org/> .
 :x :value 1.
 { :x :value ?v. } => { { :x :value ?v. } => false. }.
@@ -112,7 +112,7 @@ def test_dynamic_inference_fuse_is_enforced():
 
 def test_forbidden_unicode_escape_is_rejected():
     with pytest.raises(SyntaxError):
-        reason({}, r'@prefix : <http://example.org/>. :x :value "\uD800".')
+        reason(r'@prefix : <http://example.org/>. :x :value "\uD800".')
 
 
 def test_cli_formats_syntax_error_and_accepts_legacy_n_flag(tmp_path):
@@ -129,7 +129,7 @@ def test_cli_formats_syntax_error_and_accepts_legacy_n_flag(tmp_path):
 
 
 def test_two_step_and_join():
-    out = reason({}, """
+    out = reason("""
 @prefix : <http://example.org/> .
 :a :p :b . :b :p :c .
 { ?x :p ?y } => { ?x :q ?y } .
@@ -140,7 +140,7 @@ def test_two_step_and_join():
 
 
 def test_recursive_ancestor_closure():
-    out = reason({}, """
+    out = reason("""
 @prefix : <http://example.org/> .
 :a :parent :b . :b :parent :c . :c :parent :d .
 { ?x :parent ?y } => { ?x :ancestor ?y } .
@@ -150,7 +150,7 @@ def test_recursive_ancestor_closure():
 
 
 def test_backward_rule_satisfies_forward_body():
-    out = reason({}, """
+    out = reason("""
 @prefix : <http://example.org/> .
 @prefix math: <http://www.w3.org/2000/10/swap/math#> .
 :alice :age 42 .
@@ -161,7 +161,7 @@ def test_backward_rule_satisfies_forward_body():
 
 
 def test_dynamic_log_implies():
-    out = reason({}, """
+    out = reason("""
 @prefix : <http://example.org/> .
 @prefix log: <http://www.w3.org/2000/10/swap/log#> .
 :a :p :b .
@@ -172,7 +172,7 @@ def test_dynamic_log_implies():
 
 
 def test_math_list_string_builtins():
-    out = reason({}, """
+    out = reason("""
 @prefix : <http://example.org/> .
 @prefix math: <http://www.w3.org/2000/10/swap/math#> .
 @prefix list: <http://www.w3.org/2000/10/swap/list#> .
@@ -188,7 +188,7 @@ def test_math_list_string_builtins():
 
 
 def test_log_query_and_output_string():
-    out = reason({}, """
+    out = reason("""
 @prefix : <http://example.org/> .
 @prefix log: <http://www.w3.org/2000/10/swap/log#> .
 :run :value "hello" .
@@ -198,7 +198,7 @@ def test_log_query_and_output_string():
 
 
 def test_log_includes_formula_matching():
-    out = reason({}, """
+    out = reason("""
 @prefix : <http://example.org/> .
 @prefix log: <http://www.w3.org/2000/10/swap/log#> .
 :scope :formula { :a :p :b . :b :p :c . } .
@@ -209,7 +209,7 @@ def test_log_includes_formula_matching():
 
 def test_inference_fuse_code():
     with pytest.raises(InferenceFuseError) as exc:
-        reason({}, """
+        reason("""
 @prefix : <http://example.org/> .
 :bad :flag true .
 { :bad :flag true } => false .
@@ -233,7 +233,7 @@ def test_ast_and_rule_object_input():
     }
     result = reason_stream(data)
     assert any(t.p == Iri(EX + "q") for t in result.derived)
-    ast = reason({"ast": True}, "@prefix : <http://example.org/> . :a :p :b .")
+    ast = reason("@prefix : <http://example.org/> . :a :p :b .", ast=True)
     assert '"_type": "Triple"' in ast
 
 
@@ -247,7 +247,7 @@ def test_custom_builtin():
         return [] if (nxt := ctx.unify_term(ctx.goal.o, Literal(str(int(s.lexical) * 2), XSD_NS + "integer", bare=True), ctx.subst)) is None else [nxt]
     register_builtin(iri, handler)
     try:
-        out = reason({}, f"""
+        out = reason(f"""
 @prefix : <http://example.org/> .
 @prefix cb: <{EX}custom#> .
 {{ 21 cb:double ?x }} => {{ :answer :is ?x }} .
@@ -266,9 +266,9 @@ def test_store_and_run_async(tmp_path):
         rows = [x async for x in store.match(Iri(EX + "a"), None, None)]
         assert rows == [a]
 
-        first = await run_async("@prefix : <http://example.org/> . :a :p :b .", {"store": {"name": "s", "path": str(tmp_path), "clear": True}})
+        first = await run_async("@prefix : <http://example.org/> . :a :p :b .", store={"name": "s", "path": str(tmp_path), "clear": True})
         await first.store.close()
-        second = await run_async("@prefix : <http://example.org/> . { ?s :p ?o } => { ?s :q ?o } .", {"store": {"name": "s", "path": str(tmp_path)}})
+        second = await run_async("@prefix : <http://example.org/> . { ?s :p ?o } => { ?s :q ?o } .", store={"name": "s", "path": str(tmp_path)})
         assert ":a :q :b ." in second.closure_n3
         await second.store.close()
     asyncio.run(scenario())

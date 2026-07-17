@@ -90,9 +90,9 @@ program = """
 { ?s :p ?o } => { ?s :q ?o } .
 """
 
-print(reason({}, program))
+print(reason(program))
 
-result = reason_stream(program, {"include_input_facts_in_closure": True})
+result = reason_stream(program, include_input_facts_in_closure=True)
 print(result.closure_n3)
 print(result.derived)
 ```
@@ -102,7 +102,7 @@ Multi-source input mirrors Eyeling’s source-list style:
 ```python
 from pyling import reason
 
-out = reason({}, {
+out = reason({
     "sources": [
         "@prefix : <http://example.org/> .\n:Socrates a :Man .\n",
         "@prefix : <http://example.org/> .\n{ ?x a :Man } => { ?x a :Mortal } .\n",
@@ -124,7 +124,7 @@ PREFIX : <http://example.org/>
 :a :p :b .
 """
 
-print(reason({"rdf": True, "include_input_facts_in_closure": True}, rdf))
+print(reason(rdf, rdf=True, include_input_facts_in_closure=True))
 ```
 
 Supported compatibility inputs include:

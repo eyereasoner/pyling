@@ -489,17 +489,28 @@ class Engine:
                 yield from self.solve(rest, nxt, depth + 1)
         # Backward rules.
         for rule in list(self.backward_rules):
-            std = self.standardize_apart(rule)
-            if len(std.premise) != 1:
+            if len(rule.premise) != 1:
                 # Eyeling backward rules can have a multi-triple head in rare quoted contexts;
                 # the normal derived-predicate form has one head triple.
                 continue
+            # Cheap predicate pre-check before paying for standardize_apart's
+            # deep copy: when both predicates are ground IRIs and differ, the
+            # rule can never match this goal.
+            head_pred = rule.premise[0].p
+            if isinstance(first.p, Iri) and isinstance(head_pred, Iri) and first.p.value != head_pred.value:
+                continue
+            std = self.standardize_apart(rule)
             nxt = self.unify_triple(first, std.premise[0], subst)
             if nxt is not None:
                 yield from self.solve(list(std.conclusion) + rest, nxt, depth + 1)
 
     def _goal_rank(self, goal: Triple, subst: Subst) -> tuple[int, int]:
-        applied = self.apply_subst_triple(goal, subst)
+        # `unbound()` below already derefs each term as it recurses, so it is
+        # equivalent to (but far cheaper than) first materializing a fully
+        # substituted copy of the goal via apply_subst_triple: that call was
+        # allocating a brand-new term tree on every candidate-goal comparison,
+        # which dominated runtime on rule sets with many pending goals.
+        pred = self.deref(goal.p, subst)
 
         def unbound(term: Term) -> int:
             term = self.deref(term, subst)
@@ -511,17 +522,17 @@ class Engine:
                 return sum(unbound(tr.s) + unbound(tr.p) + unbound(tr.o) for tr in term.triples)
             return 0
 
-        variables = unbound(applied.s) + unbound(applied.o)
-        if not isinstance(applied.p, Iri) or get_builtin(applied.p.value) is None:
+        variables = unbound(goal.s) + unbound(goal.o)
+        if not isinstance(pred, Iri) or get_builtin(pred.value) is None:
             return (0, variables)
-        if applied.p.value == "http://www.w3.org/2000/10/swap/list#iterate" and unbound(applied.s) == 0:
+        if pred.value == "http://www.w3.org/2000/10/swap/list#iterate" and unbound(goal.s) == 0:
             return (-1, variables)
         comparisons = {
             "equalTo", "notEqualTo", "greaterThan", "lessThan",
             "notGreaterThan", "notLessThan", "contains", "startsWith",
             "endsWith", "matches", "notMatches",
         }
-        local = applied.p.value.rsplit("#", 1)[-1]
+        local = pred.value.rsplit("#", 1)[-1]
         if local in {"collectAllIn", "forAllIn"}:
             return (3, variables)
         if local in comparisons and variables:
@@ -698,9 +709,16 @@ class Engine:
         return Rule((Triple(cv(t.s), cv(t.p), cv(t.o)) for t in rule.premise), (Triple(cv(t.s), cv(t.p), cv(t.o)) for t in rule.conclusion), rule.is_forward, rule.is_fuse)
 
     def rdf_collection_to_list(self, node: Term) -> list[Term] | None:
+        # Literals and formulas can never be rdf:first/rdf:rest subjects, so
+        # bail out immediately instead of paying for a facts scan below.
+        if isinstance(node, (Literal, GraphTerm)):
+            return None
+        self._ensure_fact_indexes_current()
         seen: set[Term] = set()
         out: list[Term] = []
         cur = node
+        first_pred = Iri(RDF_FIRST)
+        rest_pred = Iri(RDF_REST)
         while True:
             if isinstance(cur, Iri) and cur.value == RDF_NIL:
                 return out
@@ -709,8 +727,13 @@ class Engine:
             if cur in seen:
                 return None
             seen.add(cur)
-            firsts = [t.o for t in self.facts if t.s == cur and isinstance(t.p, Iri) and t.p.value == RDF_FIRST]
-            rests = [t.o for t in self.facts if t.s == cur and isinstance(t.p, Iri) and t.p.value == RDF_REST]
+            sk = self._lookup_key(cur)
+            if sk is None:
+                firsts = [t.o for t in self.facts if t.s == cur and isinstance(t.p, Iri) and t.p.value == RDF_FIRST]
+                rests = [t.o for t in self.facts if t.s == cur and isinstance(t.p, Iri) and t.p.value == RDF_REST]
+            else:
+                firsts = [t.o for t in self._facts_by_ps.get((first_pred, sk), ()) if t.s == cur]
+                rests = [t.o for t in self._facts_by_ps.get((rest_pred, sk), ()) if t.s == cur]
             if len(firsts) != 1 or len(rests) != 1:
                 return None
             out.append(firsts[0])
@@ -808,34 +831,104 @@ def _input_to_document(input_data: Any, options: Mapping[str, Any] | None = None
     raise TypeError("input must be an N3 string, source list, RDF-like mapping, or AST bundle")
 
 
-def _normalize_options(opts: Mapping[str, Any] | None) -> dict[str, Any]:
-    options = dict(opts or {})
-    for arg in options.get("args", []) or []:
-        if arg in {"--proof", "-p"}:
-            options["proof"] = True
-        if arg in {"--rdf", "-r"}:
-            options["rdf"] = True
-        if arg == "--ast":
-            options["ast"] = True
-        if arg in {"--include-input", "--include-input-facts"}:
-            options["include_input_facts_in_closure"] = True
+def _build_options(
+    *,
+    rdf: bool = False,
+    rdf12: bool = False,
+    input_format: str | None = None,
+    include_input_facts_in_closure: bool = False,
+    max_depth: int | None = None,
+    max_iterations: int | None = None,
+    store: Any = None,
+    store_path: str | None = None,
+    store_clear: bool = False,
+    ast: bool = False,
+    proof: bool = False,
+) -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "rdf": rdf,
+        "rdf12": rdf12,
+        "include_input_facts_in_closure": include_input_facts_in_closure,
+        "ast": ast,
+        "proof": proof,
+    }
+    if input_format is not None:
+        options["input_format"] = input_format
+    if max_depth is not None:
+        options["max_depth"] = max_depth
+    if max_iterations is not None:
+        options["max_iterations"] = max_iterations
+    if store is not None:
+        options["store"] = store
+    if store_path is not None:
+        options["storePath"] = store_path
+        options["storeClear"] = store_clear
     return options
 
 
-def reason_stream(input_data: Any = "", options: Mapping[str, Any] | None = None) -> ReasonStreamResult:
-    options = _normalize_options(options)
+def reason_stream(
+    input_data: Any = "",
+    *,
+    rdf: bool = False,
+    rdf12: bool = False,
+    input_format: str | None = None,
+    include_input_facts_in_closure: bool = False,
+    max_depth: int | None = None,
+    max_iterations: int | None = None,
+    store: Any = None,
+) -> ReasonStreamResult:
+    """Parse ``input_data`` and run the reasoner to a fixed point.
+
+    ``input_data`` is an N3/Turtle/TriG/etc. string, a source-list mapping
+    (``{"sources": [...]}}``), or an already-parsed :class:`Document`/AST
+    bundle. All other reasoning options are explicit keyword arguments.
+    """
+    options = _build_options(
+        rdf=rdf,
+        rdf12=rdf12,
+        input_format=input_format,
+        include_input_facts_in_closure=include_input_facts_in_closure,
+        max_depth=max_depth,
+        max_iterations=max_iterations,
+        store=store,
+    )
     doc = _input_to_document(input_data, options)
     engine = Engine(doc, options)
-    store_opt = options.get("store")
-    if store_opt:
+    if store is not None:
         # For sync API, store support is in-memory during the run; run_async persists.
-        engine.store = create_fact_store(store_opt)
+        engine.store = create_fact_store(store)
     return engine.run()
 
 
-def reason(options: Mapping[str, Any] | None = None, input_data: Any = "") -> str:
-    options = _normalize_options(options)
-    if options.get("ast"):
+def reason(
+    input_data: Any = "",
+    *,
+    rdf: bool = False,
+    rdf12: bool = False,
+    input_format: str | None = None,
+    include_input_facts_in_closure: bool = False,
+    max_depth: int | None = None,
+    max_iterations: int | None = None,
+    store: Any = None,
+    ast: bool = False,
+    proof: bool = False,
+) -> str:
+    """Reason over ``input_data`` and return the closure rendered as N3.
+
+    Pass ``ast=True`` to get the parsed AST as a JSON string instead.
+    """
+    options = _build_options(
+        rdf=rdf,
+        rdf12=rdf12,
+        input_format=input_format,
+        include_input_facts_in_closure=include_input_facts_in_closure,
+        max_depth=max_depth,
+        max_iterations=max_iterations,
+        store=store,
+        ast=ast,
+        proof=proof,
+    )
+    if ast:
         doc = _input_to_document(input_data, options)
         value = [
             {"_type": "PrefixEnv", "map": doc.prefixes.map, "baseIri": doc.prefixes.base_iri},
@@ -844,26 +937,62 @@ def reason(options: Mapping[str, Any] | None = None, input_data: Any = "") -> st
             [{"premise": [triple_to_primitive(t) for t in r.premise], "conclusion": [triple_to_primitive(t) for t in r.conclusion], "isForward": r.is_forward} for r in doc.backward_rules],
         ]
         return json.dumps(value, indent=2, sort_keys=True)
-    return reason_stream(input_data, options).closure_n3
+    return reason_stream(
+        input_data,
+        rdf=rdf,
+        rdf12=rdf12,
+        input_format=input_format,
+        include_input_facts_in_closure=include_input_facts_in_closure,
+        max_depth=max_depth,
+        max_iterations=max_iterations,
+        store=store,
+    ).closure_n3
 
 
-async def run_async(input_data: Any = "", options: Mapping[str, Any] | None = None) -> ReasonStreamResult:
-    options = _normalize_options(options)
+async def run_async(
+    input_data: Any = "",
+    *,
+    rdf: bool = False,
+    rdf12: bool = False,
+    input_format: str | None = None,
+    include_input_facts_in_closure: bool = False,
+    max_depth: int | None = None,
+    max_iterations: int | None = None,
+    store: Any = None,
+    store_path: str | None = None,
+    store_clear: bool = False,
+) -> ReasonStreamResult:
+    """Like :func:`reason_stream`, but awaits a persistent fact store.
+
+    Provide either ``store`` (a fact-store spec mapping) or ``store_path``
+    (with optional ``store_clear``) to persist facts across runs.
+    """
+    options = _build_options(
+        rdf=rdf,
+        rdf12=rdf12,
+        input_format=input_format,
+        include_input_facts_in_closure=include_input_facts_in_closure,
+        max_depth=max_depth,
+        max_iterations=max_iterations,
+        store=store,
+        store_path=store_path,
+        store_clear=store_clear,
+    )
     doc = _input_to_document(input_data, options)
     engine = Engine(doc, options)
-    store_opt = options.get("store") or (options.get("storePath") and {"name": "default", "path": options.get("storePath"), "clear": options.get("storeClear", False)})
+    store_opt = store or (store_path and {"name": "default", "path": store_path, "clear": store_clear})
     if store_opt:
-        store = create_fact_store(store_opt)
+        fact_store = create_fact_store(store_opt)
         # Load previous store facts.
-        if hasattr(store, "triples"):
-            for tr in store.triples:
+        if hasattr(fact_store, "triples"):
+            for tr in fact_store.triples:
                 engine.add_fact(tr, inferred=False)
         result = engine.run()
         for tr in doc.triples:
-            await store.add(tr, "explicit")
+            await fact_store.add(tr, "explicit")
         for tr in result.derived:
-            await store.add(tr, "inferred")
-        result.store = store
+            await fact_store.add(tr, "inferred")
+        result.store = fact_store
         return result
     return engine.run()
 
@@ -886,15 +1015,25 @@ def _input_to_sources(input_data: Any) -> list[tuple[str, str | None]]:
     return [(str(input_data), None)]
 
 
-def reason_message_stream(input_data: Any = "", options: Mapping[str, Any] | None = None) -> Iterator[ReasonStreamResult]:
+def reason_message_stream(
+    input_data: Any = "",
+    *,
+    include_input_facts_in_closure: bool = False,
+    max_depth: int | None = None,
+    max_iterations: int | None = None,
+) -> Iterator[ReasonStreamResult]:
     """Run rules against an RDF Message Log one replay message at a time.
 
     Non-message sources are parsed once as rules/facts. Each yielded result is
     equivalent to running the reasoner over those base sources plus one replay
     envelope document.
     """
-    options = _normalize_options(options)
-    options["rdf"] = True
+    options = _build_options(
+        rdf=True,
+        include_input_facts_in_closure=include_input_facts_in_closure,
+        max_depth=max_depth,
+        max_iterations=max_iterations,
+    )
     sources = _input_to_sources(input_data)
     base_docs: list[Document] = []
     message_sources: list[tuple[str, str | None]] = []

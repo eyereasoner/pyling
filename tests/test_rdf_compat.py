@@ -14,8 +14,9 @@ from pyling import (
 
 def test_rdf_turtle_mode_does_not_emit_rdflib_default_prefix_noise():
     out = reason(
-        {"rdf": True, "include_input_facts_in_closure": True},
         "PREFIX : <http://example.org/>\n:a :p :b .",
+        rdf=True,
+        include_input_facts_in_closure=True,
     )
     assert "@prefix : <http://example.org/> ." in out
     assert ":a :p :b ." in out
@@ -32,7 +33,7 @@ MESSAGE
 :b :p 2 .
 '''
     doc = parse_rdf_message_log(log)
-    rendered = reason({"include_input_facts_in_closure": True}, doc)
+    rendered = reason(doc, include_input_facts_in_closure=True)
     assert "eymsg:RDFMessageStream" in rendered
     assert "eymsg:messageCount 3" in rendered
     assert "log:nameOf" in rendered
@@ -54,7 +55,7 @@ PREFIX : <http://example.org/>
 MESSAGE
 :b :p 2 .
 '''
-    out = reason({"rdf": True}, {"sources": [rules, log]})
+    out = reason({"sources": [rules, log]}, rdf=True)
     assert ":seen \"1\"^^xsd:integer" in out
     assert ":seen \"2\"^^xsd:integer" in out
 
@@ -67,7 +68,7 @@ MESSAGE
 MESSAGE
 :b :p 2 .
 '''
-    results = list(reason_message_stream(log, {"rdf": True, "include_input_facts_in_closure": True}))
+    results = list(reason_message_stream(log, include_input_facts_in_closure=True))
     assert len(results) == 3
     assert "eymsg:payloadKind eymsg:empty" in results[1].closure_n3
     assert "eymsg:offset 3" in results[2].closure_n3
