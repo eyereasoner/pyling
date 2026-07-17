@@ -15,6 +15,7 @@ from .store import create_fact_store
 from .terms import (
     LOG_IMPLIED_BY,
     LOG_IMPLIES,
+    LOG_MEMOIZE,
     LOG_OUTPUT_STRING,
     OWL_DIFFERENT_FROM,
     OWL_SAME_AS,
@@ -126,6 +127,12 @@ class Engine:
         self.max_iterations = int(self.options.get("max_iterations", self.options.get("maxIterations", 1000)))
         self.skolem_salt = str(uuid.uuid4())
         self.store = None
+        # Opt-in backward-goal memoization/tabling, declared with top-level
+        # facts of the form `<predicate> log:memoize true.` (see the Eyeling
+        # JS reference engine). See _extract_memoize_declarations and solve().
+        self._memoized_predicates: set[str] = set()
+        self._predicate_memo_tables: dict[tuple, dict[str, dict[str, Any]]] = {}
+        self._extract_memoize_declarations()
 
     def term_to_n3(self, term: Term) -> str:
         return term_to_n3(term, self.prefixes)
@@ -181,6 +188,30 @@ class Engine:
             self._index_fact(tr)
         self._indexed_facts_obj_id = id(self.facts)
         self._indexed_facts_len = len(self.facts)
+
+    def _extract_memoize_declarations(self) -> None:
+        """Pull out `<predicate> log:memoize true.` directives.
+
+        These are engine hints, not data triples, so they are removed from
+        the fact set (matching the Eyeling JS reference engine) and recorded
+        in `self._memoized_predicates` for `solve()` to consult.
+        """
+        kept: list[Triple] = []
+        changed = False
+        for tr in self.facts:
+            if (
+                isinstance(tr.p, Iri) and tr.p.value == LOG_MEMOIZE
+                and isinstance(tr.s, Iri)
+                and isinstance(tr.o, Literal) and bool_value(tr.o) is True
+            ):
+                self._memoized_predicates.add(tr.s.value)
+                changed = True
+                continue
+            kept.append(tr)
+        if changed:
+            self.facts = kept
+            self._fact_set = set(kept)
+            self._rebuild_fact_indexes()
 
     def _ensure_fact_indexes_current(self) -> None:
         # Some log:* built-ins temporarily replace engine.facts with a scoped
@@ -451,6 +482,93 @@ class Engine:
         return "".join(literal_as_output_string(t.o) for t in items)
 
     # ------------------------------------------------------------------
+    # Backward-goal memoization (tabling)
+    #
+    # Opt-in, predicate-scoped answer caching for backward-chained goals,
+    # ported from the Eyeling JS reference engine's `log:memoize` support.
+    # Only predicates explicitly declared with `<predicate> log:memoize
+    # true.` are affected, so it cannot change results for programs that
+    # don't use it. A goal is only cacheable once its *entire* answer set has
+    # been enumerated ("complete"), and only when at least one of its subject
+    # or object is fully ground (no Var/Blank/OpenListTerm anywhere), since
+    # that is what makes the cache key well-defined. The cache is scoped to
+    # the current fact/rule set so it is automatically invalidated whenever
+    # facts are added or `engine.facts` is swapped (e.g. by the log:includes/
+    # log:notIncludes built-ins).
+    # ------------------------------------------------------------------
+    def _term_has_var_or_blank(self, term: Term) -> bool:
+        if isinstance(term, (Var, Blank, OpenListTerm)):
+            return True
+        if isinstance(term, ListTerm):
+            return any(self._term_has_var_or_blank(e) for e in term.elems)
+        if isinstance(term, GraphTerm):
+            return any(
+                self._term_has_var_or_blank(tr.s) or self._term_has_var_or_blank(tr.p) or self._term_has_var_or_blank(tr.o)
+                for tr in term.triples
+            )
+        return False
+
+    def _can_memoize_answer_term(self, term: Term) -> bool:
+        if isinstance(term, (Var, OpenListTerm)):
+            return False
+        if isinstance(term, ListTerm):
+            return all(self._can_memoize_answer_term(e) for e in term.elems)
+        if isinstance(term, GraphTerm):
+            return all(
+                self._can_memoize_answer_term(tr.s) and self._can_memoize_answer_term(tr.p) and self._can_memoize_answer_term(tr.o)
+                for tr in term.triples
+            )
+        return True
+
+    def _memo_term_key(self, term: Term) -> str:
+        return json.dumps(term_to_primitive(term), sort_keys=True, default=str)
+
+    def _predicate_memo_key(self, goal: Triple) -> str | None:
+        if not isinstance(goal.p, Iri):
+            return None
+        s_bound = not self._term_has_var_or_blank(goal.s)
+        o_bound = not self._term_has_var_or_blank(goal.o)
+        if not s_bound and not o_bound:
+            return None
+        s_part = self._memo_term_key(goal.s) if s_bound else "_"
+        o_part = self._memo_term_key(goal.o) if o_bound else "_"
+        return f"{goal.p.value}|{s_part}|{o_part}"
+
+    def _memo_scope_version(self) -> tuple:
+        # The cache is only valid while the underlying fact/rule set is
+        # unchanged. `engine.facts` is a different list object whenever
+        # log:includes/log:notIncludes swap in a scoped formula, so this
+        # naturally partitions the cache per scope.
+        return (id(self.facts), len(self.facts), len(self.backward_rules))
+
+    def _predicate_memo_lookup(self, key: str) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+        version = self._memo_scope_version()
+        table = self._predicate_memo_tables.get(version)
+        if table is None:
+            table = {}
+            self._predicate_memo_tables[version] = table
+        entry = table.get(key)
+        if entry is None:
+            entry = {"computing": False, "complete": False, "unsafe": False, "answers": [], "answer_keys": set()}
+            table[key] = entry
+        return table, entry
+
+    def _store_predicate_memo_answer(self, entry: dict[str, Any], goal: Triple, subst: Subst) -> None:
+        answer = self.apply_subst_triple(goal, subst)
+        if not (
+            self._can_memoize_answer_term(answer.s)
+            and self._can_memoize_answer_term(answer.p)
+            and self._can_memoize_answer_term(answer.o)
+        ):
+            entry["unsafe"] = True
+            return
+        key = self._memo_term_key(answer.s) + "\t" + self._memo_term_key(answer.p) + "\t" + self._memo_term_key(answer.o)
+        if key in entry["answer_keys"]:
+            return
+        entry["answer_keys"].add(key)
+        entry["answers"].append(answer)
+
+    # ------------------------------------------------------------------
     # Solving and unification
     # ------------------------------------------------------------------
     def solve(self, goals: list[Triple], subst: Subst, depth: int = 0) -> Iterator[Subst]:
@@ -481,6 +599,37 @@ class Engine:
                     nxt = self.unify_triple(first, Triple(collection, first.p, obj), subst)
                     if nxt is not None:
                         yield from self.solve(rest, nxt, depth + 1)
+        # Opt-in backward-goal memoization/tabling (see the block of helper
+        # methods above `solve`). Only affects predicates the program itself
+        # declared with `log:memoize true`.
+        if isinstance(first.p, Iri) and first.p.value in self._memoized_predicates:
+            memo_key = self._predicate_memo_key(first)
+            if memo_key is not None:
+                table, memo_entry = self._predicate_memo_lookup(memo_key)
+                if memo_entry["complete"]:
+                    for answer in memo_entry["answers"]:
+                        nxt = self.unify_triple(first, answer, subst)
+                        if nxt is not None:
+                            yield from self.solve(rest, nxt, depth + 1)
+                    return
+                if not memo_entry["computing"]:
+                    memo_entry["computing"] = True
+                    try:
+                        # Solve `first` in isolation so its complete answer set
+                        # can be recorded, independent of `rest`.
+                        for nxt in self.solve([first], subst, depth + 1):
+                            self._store_predicate_memo_answer(memo_entry, first, nxt)
+                            yield from self.solve(rest, nxt, depth + 1)
+                    finally:
+                        memo_entry["computing"] = False
+                        if memo_entry["unsafe"]:
+                            table.pop(memo_key, None)
+                        else:
+                            memo_entry["complete"] = True
+                    return
+                # else: an ancestor call is already computing this exact goal
+                # (self-recursive predicate) - fall through to the normal,
+                # non-memoized resolution below instead of deadlocking.
         # Facts. Use predicate/position indexes when the selected goal has
         # ground components; this is essential for large rule sets.
         for fact in list(self._candidate_facts(first)):

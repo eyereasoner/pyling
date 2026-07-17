@@ -29,6 +29,7 @@ LOG_IMPLIED_BY = LOG_NS + "impliedBy"
 LOG_QUERY = LOG_NS + "query"
 LOG_OUTPUT_STRING = LOG_NS + "outputString"
 LOG_NAME_OF = LOG_NS + "nameOf"
+LOG_MEMOIZE = LOG_NS + "memoize"
 
 EYMSG_NS = "https://eyereasoner.github.io/eyeling/vocab/message#"
 EYMSG_RDF_MESSAGE_STREAM = EYMSG_NS + "RDFMessageStream"
