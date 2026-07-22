@@ -195,13 +195,14 @@ loads the RDFJS inference engine's OWL2RL N3 rules from
 
 ```bash
 npm run perf -- --suite=owl-mobibench --mobibench-limit=5 --reasoner=pyling
+npm run perf:mobibench
 ```
 
 The GitHub Actions performance workflow runs both `pyling` and `fuxi` for the
-examples suite and the full MobiBench OWL2RL suite. It writes JSON, CSV, and
-Markdown reports to the `performance-reports` artifact and includes the Markdown
-summary in the workflow run summary. The workflow fails if FuXi is skipped
-entirely, but individual benchmark case failures remain visible in the report.
+examples suite only. Full MobiBench is intentionally local-only through
+`npm run perf:mobibench`, because it is larger and less suitable for normal pull
+request feedback. Both paths write JSON, CSV, and Markdown reports to
+`performance-reports`.
 
 Disable lazy installation, or supply a dedicated Python executable or checkout
 path:
@@ -211,6 +212,24 @@ npm run perf -- --reasoner=fuxi --no-install-fuxi
 FUXI_PYTHON=/path/to/venv/bin/python npm run perf -- --reasoner=fuxi
 FUXI_PYTHONPATH=/path/to/FuXi-reincarnate/lib npm run perf -- --reasoner=fuxi
 ```
+
+FuXi currently requires Python 3.13 or newer. If your system `python3` is older,
+install a 3.13 interpreter and let the benchmark harness create
+`.cache/fuxi-venv` from it. Two practical options:
+
+```bash
+# uv-managed Python, no system Python upgrade needed
+uv python install 3.13
+FUXI_PYTHON="$(uv python find 3.13)" npm run perf -- --reasoner=fuxi --case=socrates
+
+# pyenv-managed Python
+pyenv install 3.13
+FUXI_PYTHON="$(pyenv prefix 3.13)/bin/python" npm run perf -- --reasoner=fuxi --case=socrates
+```
+
+After Python 3.13 is available, `npm run perf -- --reasoner=fuxi ...` installs
+the `fuxi` package lazily into `.cache/fuxi-venv` and reuses that environment on
+later benchmark runs.
 
 Additional fixtures can be added without editing the script:
 

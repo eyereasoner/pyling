@@ -42,30 +42,12 @@ jobs:
           --report-dir=performance-reports/examples
           --markdown
 
-      - name: Run full OWL2RL MobiBench comparison
-        run: >
-          python tools/compare_reasoners.py
-          --suite=owl-mobibench
-          --mobibench-limit=0
-          --reasoner=pyling,fuxi
-          --iterations=1
-          --warmup=0
-          --max-iterations=100
-          --timeout=600
-          --allow-failures
-          --require-reasoner=fuxi
-          --report-dir=performance-reports/owl-mobibench
-          --markdown
-
       - name: Write job summary
         if: always()
         run: |
           {
             echo "## Examples"
             cat performance-reports/examples/report.md || true
-            echo
-            echo "## OWL2RL MobiBench"
-            cat performance-reports/owl-mobibench/report.md || true
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload performance reports
