@@ -13,6 +13,33 @@ The [Eyeling](https://github.com/eyereasoner/eyeling) repositories remains the m
 - `rdflib` is installed automatically from `pyproject.toml`
 - `pytest` is needed only for the test suite
 
+## Install in your project
+
+After pyling is published to PyPI as `pyling-n3`, install it with Python's
+standard package installer:
+
+```bash
+python -m pip install pyling-n3
+```
+
+With project-oriented package managers:
+
+```bash
+uv add pyling-n3
+poetry add pyling-n3
+pdm add pyling-n3
+```
+
+The distribution package is named `pyling-n3`; the Python import package and
+CLI command remain `pyling`.
+
+Until the package is published on PyPI, install directly from GitHub:
+
+```bash
+python -m pip install "pyling-n3 @ git+https://github.com/eyereasoner/pyling.git"
+uv add "pyling-n3 @ git+https://github.com/eyereasoner/pyling.git"
+```
+
 ## Install from a checkout
 
 ```bash
@@ -439,9 +466,11 @@ NOTATION3TESTS_DIR=/path/to/notation3tests python -m pytest -q
 ## Packaging and release
 
 The package metadata lives in `pyproject.toml`; releases are tracked in
-`CHANGELOG.md`. The `Package build` GitHub Actions workflow builds the wheel and
-sdist, runs `twine check`, and uploads the generated distributions as an
-artifact.
+`CHANGELOG.md`. PyPI is the Python package index, `pip` is the default installer
+users will normally run, and `build` plus `twine` are the local maintainer tools
+used to create and upload distributions. The `Package build` GitHub Actions
+workflow builds the wheel and sdist, runs `twine check`, and uploads the
+generated distributions as an artifact.
 
 Build and inspect a release locally:
 
@@ -449,8 +478,31 @@ Build and inspect a release locally:
 python -m pip install -e ".[build,test]"
 python -m pytest -q
 python -m build
-twine check dist/*
+twine check dist/pyling_n3-*
 ```
+
+Publish first to TestPyPI:
+
+```bash
+twine upload --repository testpypi dist/pyling_n3-*
+python -m pip install \
+  --index-url https://test.pypi.org/simple/ \
+  --extra-index-url https://pypi.org/simple/ \
+  pyling-n3
+```
+
+If that install works in a fresh environment, publish the same checked
+distributions to PyPI:
+
+```bash
+twine upload dist/pyling_n3-*
+python -m pip install pyling-n3
+```
+
+For GitHub Actions releases, prefer PyPI Trusted Publishing over storing a
+long-lived API token in repository secrets. Configure a PyPI trusted publisher
+for the `eyereasoner/pyling` repository and the release workflow file, then use
+`pypa/gh-action-pypi-publish` with `id-token: write` permissions.
 
 Release checklist:
 
