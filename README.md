@@ -127,6 +127,21 @@ PREFIX : <http://example.org/>
 print(reason(rdf, rdf=True, include_input_facts_in_closure=True))
 ```
 
+RDFLib graphs can also be passed directly:
+
+```python
+from rdflib import Graph, Namespace
+from pyling import reason_graph
+
+ex = Namespace("http://example.org/")
+g = Graph()
+g.bind("", ex)
+g.add((ex.a, ex.p, ex.b))
+
+closure = reason_graph(g, include_input_facts_in_closure=True)
+print(closure.serialize(format="turtle"))
+```
+
 Supported compatibility inputs include:
 
 - Turtle / `.ttl`

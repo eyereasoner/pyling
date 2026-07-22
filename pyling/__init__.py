@@ -1,7 +1,7 @@
 """Python API for pyling."""
 from __future__ import annotations
 
-from .engine import INFERENCE_FUSE_EXIT_CODE, InferenceFuseError, ReasonStreamResult, reason, reason_stream, run_async, reason_message_stream
+from .engine import INFERENCE_FUSE_EXIT_CODE, InferenceFuseError, ReasonStreamResult, reason, reason_graph, reason_stream, run_async, reason_message_stream
 from .builtins import register_builtin, unregister_builtin, register_builtin_module, list_builtin_iris
 from .store import MemoryFactStore, PersistentFactStore, create_fact_store
 from .terms import (
@@ -34,11 +34,12 @@ from .terms import (
     rule_to_primitive,
 )
 from .parser import N3SyntaxError, parse_n3, parse_sources
-from .rdf import RdfSyntaxError, parse_rdf_text, parse_rdf_message_log, iter_rdf_message_documents, assert_rdf12_surface_syntax
+from .rdf import RdfSyntaxError, parse_rdf_graph, parse_rdf_text, parse_rdf_message_log, iter_rdf_message_documents, assert_rdf12_surface_syntax, triples_to_rdflib_graph
 from .printing import term_to_n3, triple_to_n3, triples_to_n3
 
 __all__ = [
     "reason",
+    "reason_graph",
     "reason_stream",
     "run_async",
     "reason_message_stream",
@@ -67,10 +68,12 @@ __all__ = [
     "parse_sources",
     "N3SyntaxError",
     "RdfSyntaxError",
+    "parse_rdf_graph",
     "parse_rdf_text",
     "parse_rdf_message_log",
     "iter_rdf_message_documents",
     "assert_rdf12_surface_syntax",
+    "triples_to_rdflib_graph",
     "term_to_n3",
     "triple_to_n3",
     "triples_to_n3",

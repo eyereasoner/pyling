@@ -9,7 +9,7 @@ from typing import Any, Iterable, Iterator, Mapping, MutableMapping, Optional
 
 from .builtins import BuiltinContext, get_builtin
 from .parser import Document, N3SyntaxError, parse_n3, parse_sources
-from .rdf import is_rdf_message_log, parse_rdf_message_log, parse_rdf_text, iter_rdf_message_documents
+from .rdf import is_rdf_message_log, parse_rdf_graph, parse_rdf_message_log, parse_rdf_text, iter_rdf_message_documents, triples_to_rdflib_graph
 from .printing import literal_as_output_string, term_to_n3, triples_to_n3
 from .store import create_fact_store
 from .terms import (
@@ -90,6 +90,15 @@ class ReasonStreamResult:
     @property
     def queryDerived(self) -> list[Triple]:
         return self.query_derived
+
+    def as_rdflib_graph(self, *, include_input_facts: bool = False):
+        if include_input_facts:
+            triples = self.facts
+        elif self.query_mode:
+            triples = self.query_triples
+        else:
+            triples = self.derived
+        return triples_to_rdflib_graph(triples, self.prefixes)
 
 
 class Engine:
@@ -946,6 +955,8 @@ def _input_to_document(input_data: Any, options: Mapping[str, Any] | None = None
         return _parse_source_auto(input_data, options)
     if isinstance(input_data, Document):
         return input_data
+    if _is_rdflib_graph(input_data):
+        return parse_rdf_graph(input_data)
     if isinstance(input_data, Mapping):
         if "sources" in input_data:
             docs = []
@@ -988,7 +999,13 @@ def _input_to_document(input_data: Any, options: Mapping[str, Any] | None = None
         brules = [rule_from_primitive(r) for r in brules_obj]
         qrules = [rule_from_primitive(r) for r in input_data[4]] if len(input_data) > 4 else []
         return Document(env, triples, frules, brules, qrules)
-    raise TypeError("input must be an N3 string, source list, RDF-like mapping, or AST bundle")
+    raise TypeError("input must be an N3 string, RDFLib graph, source list, RDF-like mapping, or AST bundle")
+
+
+def _is_rdflib_graph(value: Any) -> bool:
+    return hasattr(value, "triples") and hasattr(value, "namespace_manager") and (
+        hasattr(value, "quads") or hasattr(value, "add")
+    )
 
 
 def _build_options(
@@ -1107,6 +1124,30 @@ def reason(
         max_iterations=max_iterations,
         store=store,
     ).closure_n3
+
+
+def reason_graph(
+    input_data: Any = "",
+    *,
+    rdf: bool = False,
+    rdf12: bool = False,
+    input_format: str | None = None,
+    include_input_facts_in_closure: bool = False,
+    max_depth: int | None = None,
+    max_iterations: int | None = None,
+    store: Any = None,
+):
+    """Reason over input and return the selected closure as an RDFLib Graph."""
+    return reason_stream(
+        input_data,
+        rdf=rdf,
+        rdf12=rdf12,
+        input_format=input_format,
+        include_input_facts_in_closure=include_input_facts_in_closure,
+        max_depth=max_depth,
+        max_iterations=max_iterations,
+        store=store,
+    ).as_rdflib_graph(include_input_facts=include_input_facts_in_closure)
 
 
 async def run_async(

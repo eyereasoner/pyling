@@ -1,4 +1,5 @@
 import pytest
+from rdflib import Graph, Namespace, URIRef
 
 from pyling import (
     GraphTerm,
@@ -6,9 +7,12 @@ from pyling import (
     RdfSyntaxError,
     assert_rdf12_surface_syntax,
     parse_rdf_message_log,
+    parse_rdf_graph,
     parse_rdf_text,
     reason,
+    reason_graph,
     reason_message_stream,
+    reason_stream,
 )
 
 
@@ -21,6 +25,49 @@ def test_rdf_turtle_mode_does_not_emit_rdflib_default_prefix_noise():
     assert "@prefix : <http://example.org/> ." in out
     assert ":a :p :b ." in out
     assert "@prefix foaf:" not in out
+
+
+def test_rdflib_graph_input_is_accepted_directly():
+    ex = Namespace("http://example.org/")
+    graph = Graph()
+    graph.bind("", ex)
+    graph.add((ex.a, ex.p, ex.b))
+
+    doc = parse_rdf_graph(graph)
+    assert doc.prefixes.map[""] == str(ex)
+    assert any(getattr(tr.s, "value", None) == str(ex.a) for tr in doc.triples)
+
+    out = reason(graph, include_input_facts_in_closure=True)
+    assert ":a :p :b ." in out
+    assert "@prefix foaf:" not in out
+
+
+def test_reason_result_can_return_rdflib_graph():
+    result = reason_stream(
+        """
+@prefix : <http://example.org/> .
+{ :a :p :b } => { :a :q :b } .
+:a :p :b .
+"""
+    )
+
+    ex = Namespace("http://example.org/")
+    closure = result.as_rdflib_graph()
+    assert (ex.a, ex.q, ex.b) in closure
+    assert (ex.a, ex.p, ex.b) not in closure
+
+
+def test_reason_graph_returns_rdflib_graph_with_selected_closure():
+    ex = Namespace("http://example.org/")
+    graph = reason_graph(
+        """
+@prefix : <http://example.org/> .
+{ :a :p :b } => { :a :q :b } .
+:a :p :b .
+""",
+    )
+
+    assert (URIRef(ex.a), URIRef(ex.q), URIRef(ex.b)) in graph
 
 
 def test_rdf_message_log_replay_exposes_payload_formula():

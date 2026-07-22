@@ -42,6 +42,7 @@ from .terms import (
     Rule,
     Term,
     Triple,
+    literal_datatype,
 )
 
 MESSAGE_VERSION_RE = re.compile(r"^\s*@?VERSION\s+['\"](?:1\.1|1\.2|1\.2-basic)-messages['\"]\s*\.?\s*(?:#.*)?$", re.I | re.M)
@@ -580,6 +581,110 @@ def _rdflib_term_to_term(
             ]
         )
     return Iri(str(term))
+
+
+def _term_iris(term: Term) -> Iterator[str]:
+    if isinstance(term, Iri):
+        yield term.value
+    elif isinstance(term, Literal) and term.datatype:
+        yield term.datatype
+    elif isinstance(term, GraphTerm):
+        for tr in term.triples:
+            yield from _term_iris(tr.s)
+            yield from _term_iris(tr.p)
+            yield from _term_iris(tr.o)
+
+
+def _bind_rdflib_namespaces(env: PrefixEnv, graph, triples: Iterable[Triple]) -> None:
+    iris: set[str] = set()
+    for tr in triples:
+        iris.update(_term_iris(tr.s))
+        iris.update(_term_iris(tr.p))
+        iris.update(_term_iris(tr.o))
+    for prefix, iri in graph.namespace_manager.namespaces():
+        ns = str(iri)
+        if any(value.startswith(ns) for value in iris):
+            env.set_prefix(str(prefix), ns, declared=True)
+
+
+def parse_rdf_graph(graph: Graph | Dataset) -> Document:
+    """Convert an RDFLib Graph or Dataset into an Eyeling Document."""
+    env = PrefixEnv({})
+    triples: list[Triple] = []
+
+    if isinstance(graph, Dataset):
+        default_id = str(graph.default_graph.identifier)
+        by_graph: dict[Term | None, list[Triple]] = {}
+        for s, p, o, g in graph.quads((None, None, None, None)):
+            tr = Triple(
+                _rdflib_term_to_term(s),
+                _rdflib_term_to_term(p),
+                _rdflib_term_to_term(o),
+            )
+            gid = (
+                None
+                if str(g) == default_id or str(g).endswith("default")
+                else _rdflib_term_to_term(g)
+            )
+            by_graph.setdefault(gid, []).append(tr)
+        for gid, body in by_graph.items():
+            if gid is None:
+                triples.extend(body)
+            else:
+                triples.append(Triple(gid, Iri(LOG_NAME_OF), GraphTerm(body)))
+    else:
+        for s, p, o in graph:
+            triples.append(
+                Triple(
+                    _rdflib_term_to_term(s),
+                    _rdflib_term_to_term(p),
+                    _rdflib_term_to_term(o),
+                )
+            )
+
+    _bind_rdflib_namespaces(env, graph, triples)
+    return Document(env, triples, [], [], [])
+
+
+def _term_to_rdflib_term(term: Term):
+    if isinstance(term, Iri):
+        return URIRef(term.value)
+    if isinstance(term, Blank):
+        label = term.label[2:] if term.label.startswith("_:") else term.label
+        return BNode(label)
+    if isinstance(term, Literal):
+        if term.lang:
+            return RdfLiteral(term.lexical, lang=term.lang)
+        return RdfLiteral(term.lexical, datatype=URIRef(literal_datatype(term)))
+    raise RdfSyntaxError(f"cannot convert {type(term).__name__} to an RDFLib graph term")
+
+
+def triples_to_rdflib_graph(
+    triples: Iterable[Triple],
+    prefixes: PrefixEnv | None = None,
+    *,
+    graph: Graph | None = None,
+) -> Graph:
+    """Convert ordinary pyling triples into an RDFLib Graph.
+
+    Formula terms, lists, open lists, and variables are intentionally rejected:
+    they are Notation3 structures and do not have a lossless representation in a
+    normal RDFLib Graph.
+    """
+    target = Graph() if graph is None else graph
+    if prefixes is not None:
+        for name in sorted(prefixes.declared):
+            if name in prefixes.map:
+                target.bind(name, URIRef(prefixes.map[name]))
+    for tr in triples:
+        target.add(
+            (
+                _term_to_rdflib_term(tr.s),
+                _term_to_rdflib_term(tr.p),
+                _term_to_rdflib_term(tr.o),
+            )
+        )
+    return target
 
 
 def _format_alias(fmt: str | None) -> str:
