@@ -8,15 +8,36 @@ version = "0.1.0"
 description = "Python implementation of the Eyeling Notation3 reasoner"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
-authors = [{name = "Generated port of Eyeling"}]
-keywords = ["Notation3", "N3", "reasoner", "RDF", "RDF 1.2", "RDF Message"]
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Eyereasoner contributors"}]
+keywords = ["Notation3", "N3", "reasoner", "RDF", "RDF 1.2", "RDF Message", "RDFLib"]
 dependencies = ["rdflib>=7.0"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Markup",
+]
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
 conformance = ["pytest>=7"]
 docs = ["jupyter>=1", "nbconvert>=7"]
+build = ["build>=1", "twine>=5"]
+
+[project.urls]
+Homepage = "https://github.com/eyereasoner/pyling"
+Repository = "https://github.com/eyereasoner/pyling"
+Issues = "https://github.com/eyereasoner/pyling/issues"
+Changelog = "https://github.com/eyereasoner/pyling/blob/main/CHANGELOG.md"
 
 [project.scripts]
 pyling = "pyling.cli:main"

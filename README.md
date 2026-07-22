@@ -245,6 +245,26 @@ examples suite only. Full MobiBench is intentionally local-only through
 request feedback. Both paths write JSON, CSV, and Markdown reports to
 `performance-reports`.
 
+The slowest pyling cases in the latest completed full run were concentrated in
+a small set of RDF-based OWL patterns:
+
+| Case | pyling median ms | Derived facts |
+|---|---:|---:|
+| `mobibench-rdfbased-xtr-reflection-subclasses` | 133,292.61 | 290 |
+| `mobibench-rdfbased-sem-bool-intersection-inst-comp` | 31,885.76 | 105 |
+| `mobibench-rdfbased-sem-bool-intersection-inst-expr` | 31,301.35 | 106 |
+| `mobibench-rdfbased-sem-bool-intersection-term` | 30,417.15 | 104 |
+| `mobibench-rdfbased-sem-key-def` | 3,042.21 | 116 |
+
+An interrupted full rerun stopped inside `pyling.engine.Engine.solve`, after
+recursive goal solving had already entered a deep multi-premise OWL rule. That
+matches the profile from the completed report: pyling is not uniformly slow,
+but the current generic N3 fixpoint solver can spend disproportionate time on
+rules with broad joins over RDF lists, subclass reflection, intersections, and
+keys. The next performance work should focus on predicate indexing for rule
+bodies, join ordering based on bound variables and candidate counts, and
+deduplication of equivalent substitutions before recursive goal expansion.
+
 The examples suite is useful for implementation regressions. After the
 memoized Fibonacci fix, pyling completes `examples/fibonacci.n3` and derives
 the expected query formula containing `F(0)`, `F(1)`, `F(10)`, `F(100)`,
@@ -415,6 +435,36 @@ You can also have `pytest` run the external suite by setting:
 ```bash
 NOTATION3TESTS_DIR=/path/to/notation3tests python -m pytest -q
 ```
+
+## Packaging and release
+
+The package metadata lives in `pyproject.toml`; releases are tracked in
+`CHANGELOG.md`. The `Package build` GitHub Actions workflow builds the wheel and
+sdist, runs `twine check`, and uploads the generated distributions as an
+artifact.
+
+Build and inspect a release locally:
+
+```bash
+python -m pip install -e ".[build,test]"
+python -m pytest -q
+python -m build
+twine check dist/*
+```
+
+Release checklist:
+
+1. Update `CHANGELOG.md` and move the relevant entries from `Unreleased` to the
+   new version.
+2. Update `version` in `pyproject.toml`.
+3. Run tests, conformance checks, notebook build, and package build locally or
+   in GitHub Actions.
+4. Confirm the published package name, ownership, license metadata, and long
+   README rendering on TestPyPI.
+5. Create a signed git tag, for example `v0.1.0`.
+6. Upload to TestPyPI and install from TestPyPI in a fresh environment.
+7. Upload the same checked distributions to PyPI.
+8. Create a GitHub release from the tag and include the changelog notes.
 
 ## Development notes
 
