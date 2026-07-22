@@ -16,6 +16,7 @@ dependencies = ["rdflib>=7.0"]
 [project.optional-dependencies]
 test = ["pytest>=7"]
 conformance = ["pytest>=7"]
+docs = ["jupyter>=1", "nbconvert>=7"]
 
 [project.scripts]
 pyling = "pyling.cli:main"

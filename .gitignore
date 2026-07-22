@@ -54,6 +54,7 @@ coverage.xml
 cover/
 .rdf-test-suite-cache/
 performance-reports/
+site/
 node_modules/
 
 # Translations

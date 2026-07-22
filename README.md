@@ -112,6 +112,27 @@ out = reason({
 
 The main exported term classes are `Iri`, `Literal`, `Var`, `Blank`, `ListTerm`, `GraphTerm`, `Triple`, `Rule`, and `PrefixEnv`.
 
+## Notebook examples
+
+Publishable notebooks live in `docs/notebooks/`:
+
+- `01-rdflib-reasoning.ipynb` shows RDFLib graph input and RDFLib graph output.
+- `02-owl-style-rules.ipynb` shows runtime-loaded OWL-style N3 rules.
+- `03-neuro-symbolic-validation.ipynb` shows symbolic validation over facts
+  extracted by a neural model.
+
+Run them locally with:
+
+```bash
+python -m pip install -e ".[docs]"
+jupyter lab docs/notebooks
+```
+
+GitHub Actions executes the notebooks and converts them to HTML in the
+`Notebook docs` workflow. Pull requests upload the generated `notebook-site`
+artifact; pushes to `main` also publish the same `site/` output through GitHub
+Pages when Pages is enabled for GitHub Actions.
+
 ## RDF and RDF 1.2 compatibility
 
 RDF mode is selected with `--rdf` on the CLI or `{"rdf": True}` in the API. It routes ordinary RDF syntax through `rdflib` instead of the N3 rule parser:
