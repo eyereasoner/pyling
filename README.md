@@ -202,11 +202,33 @@ npm run perf -- --suite=owl-mobibench --mobibench-limit=5 --reasoner=pyling
 npm run perf:mobibench
 ```
 
+Latest local MobiBench OWL2RL run, measured with one iteration and no warmup on
+2026-07-22:
+
+| Reasoner | Cases | Failures | Median ms/case | Cases deriving facts | Total derived facts |
+|---|---:|---:|---:|---:|---:|
+| pyling | 273 | 0 | 85.88 | 273 | 33,402 |
+| FuXi | 273 | 0 | 95.93 | 43 | 221 |
+
+Interpret these numbers as a profile of each configured reasoning path, not as
+a strict semantic equivalence result. pyling materializes with the runtime-loaded
+OWL2RL N3 rules, which include broad datatype and RDF-based entailment rules.
+FuXi runs its built-in OWL/DLP translation, which is fast and useful for many
+structural OWL cases but derives no facts for many datatype-heavy MobiBench
+cases. For example, `rdfbased-sem-rdfs-subclass-trans` derives facts in both
+engines, while the early `rdfbased-dat-*` cases mostly derive only in pyling.
+
 The GitHub Actions performance workflow runs both `pyling` and `fuxi` for the
 examples suite only. Full MobiBench is intentionally local-only through
 `npm run perf:mobibench`, because it is larger and less suitable for normal pull
 request feedback. Both paths write JSON, CSV, and Markdown reports to
 `performance-reports`.
+
+The examples suite is useful for implementation regressions. After the
+memoized Fibonacci fix, pyling completes `examples/fibonacci.n3` and derives
+the expected query formula containing `F(0)`, `F(1)`, `F(10)`, `F(100)`,
+`F(1000)`, and `F(10000)`. FuXi's generic N3 rule loader does not currently run
+that file because it rejects the literal-subject rule shape used by the example.
 
 Disable lazy installation, or supply a dedicated Python executable or checkout
 path:
