@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import warnings
 from dataclasses import dataclass
 from typing import Iterable, Iterator, Optional
 
@@ -725,7 +726,21 @@ def _rdflib_parse(text: str, *, format: str, base_iri: str | None = None):
     data = str(text or "")
     if fmt in {"trig", "nquads"}:
         ds = Dataset(default_union=False)
-        ds.parse(data=data, format=fmt, publicID=base_iri)
+        with warnings.catch_warnings():
+            # RDFLib 7.6 still routes Dataset TriG parsing through deprecated
+            # ConjunctiveGraph/default_context internals. Keep our test output
+            # clean while preserving Dataset semantics for named graphs.
+            warnings.filterwarnings(
+                "ignore",
+                message=r"Dataset\.default_context is deprecated, use Dataset\.default_graph instead\.",
+                category=DeprecationWarning,
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message=r"ConjunctiveGraph is deprecated, use Dataset instead\.",
+                category=DeprecationWarning,
+            )
+            ds.parse(data=data, format=fmt, publicID=base_iri)
         return ds
     g = Graph()
     g.parse(data=data, format=fmt, publicID=base_iri)

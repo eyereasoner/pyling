@@ -8,7 +8,9 @@ mutating this project.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
+import io
 import json
 import os
 import shutil
@@ -88,12 +90,20 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("No reasoners selected. Use --list to inspect reasoner ids.")
 
     results = run_benchmarks(selected_cases, selected_reasoners, args)
+    if args.report_dir:
+        write_report_dir(results, args)
     if args.json:
         print_json(results, args)
     elif args.csv:
         print_csv(results)
+    elif args.markdown:
+        print_markdown(results, args)
     else:
         print_table(results, args)
+    if missing_required_reasoners(results, args.require_reasoner):
+        return 1
+    if args.allow_failures:
+        return 0
     return 1 if any(result.status == "failed" for result in results) else 0
 
 
@@ -116,6 +126,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--include-input-facts", action="store_true", help="include explicit facts in pyling closure output")
     parser.add_argument("--json", action="store_true", help="print JSON")
     parser.add_argument("--csv", action="store_true", help="print CSV")
+    parser.add_argument("--markdown", action="store_true", help="print Markdown report")
+    parser.add_argument("--report-dir", help="write report.json, report.csv, and report.md into this directory")
+    parser.add_argument("--allow-failures", action="store_true", help="exit 0 even when individual benchmark cases fail")
+    parser.add_argument("--require-reasoner", action="append", default=[], help="fail if a reasoner has no non-skipped benchmark result")
     parser.add_argument("--fuxi-python", default=os.environ.get("FUXI_PYTHON", "python3"), help="Python executable with FuXi installed")
     parser.add_argument("--fuxi-pythonpath", default=os.environ.get("FUXI_PYTHONPATH"), help="optional PYTHONPATH for a FuXi checkout")
     parser.add_argument("--fuxi-venv", default=os.environ.get("FUXI_VENV", str(DEFAULT_FUXI_VENV)), help="venv path used for lazy FuXi installation")
@@ -557,6 +571,53 @@ def print_csv(results: list[BenchmarkResult]) -> None:
             ])
 
 
+def write_report_dir(results: list[BenchmarkResult], args: argparse.Namespace) -> None:
+    report_dir = Path(args.report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    writers = {
+        "report.json": print_json,
+        "report.csv": lambda current_results, _args: print_csv(current_results),
+        "report.md": print_markdown,
+    }
+    for name, writer in writers.items():
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            writer(results, args)
+        (report_dir / name).write_text(buffer.getvalue(), encoding="utf8")
+
+
+def print_markdown(results: list[BenchmarkResult], args: argparse.Namespace) -> None:
+    print("# Reasoner Performance Report")
+    print()
+    print(f"- Iterations: `{args.iterations}`")
+    print(f"- Warmup: `{args.warmup}`")
+    print(f"- Cases: `{len({result.case_id for result in results})}`")
+    print(f"- Reasoners: `{', '.join(sorted({result.reasoner for result in results}))}`")
+    print()
+    print("| Case | Reasoner | Status | Median ms | Min ms | Max ms | Facts | Derived | Error |")
+    print("|---|---:|---:|---:|---:|---:|---:|---:|---|")
+    for result in sorted(results, key=lambda item: (item.case_id, item.reasoner)):
+        summary = summarize(result.samples)
+        total = (summary or {}).get("totalMs") or {}
+        print(
+            "| "
+            + " | ".join(
+                [
+                    md_cell(result.case_id),
+                    md_cell(result.reasoner),
+                    md_cell(result.status),
+                    fmt_number(total.get("median")),
+                    fmt_number(total.get("min")),
+                    fmt_number(total.get("max")),
+                    md_cell(none_as_empty((summary or {}).get("facts"))),
+                    md_cell(none_as_empty((summary or {}).get("derived"))),
+                    md_cell(result.error or ""),
+                ]
+            )
+            + " |"
+        )
+
+
 def summarize(samples: list[Sample]) -> dict[str, Any] | None:
     if not samples:
         return None
@@ -571,6 +632,29 @@ def summarize(samples: list[Sample]) -> dict[str, Any] | None:
         "derived": first_not_none(sample.derived for sample in samples),
         "closureChars": first_not_none(sample.closure_chars for sample in samples),
     }
+
+
+def missing_required_reasoners(results: list[BenchmarkResult], requested: list[str]) -> bool:
+    required = split_requested(requested)
+    missing = []
+    for reasoner in sorted(required):
+        if not any(result.reasoner == reasoner and result.status == "ok" for result in results):
+            missing.append(reasoner)
+    if missing:
+        print(f"Missing required successful reasoner execution: {', '.join(missing)}", file=sys.stderr)
+    return bool(missing)
+
+
+def fmt_number(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, (int, float)):
+        return f"{value:.2f}"
+    return md_cell(value)
+
+
+def md_cell(value: Any) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
 
 
 def select_cases(cases: list[BenchmarkCase], requested: list[str]) -> list[BenchmarkCase]:

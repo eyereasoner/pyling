@@ -197,6 +197,12 @@ loads the RDFJS inference engine's OWL2RL N3 rules from
 npm run perf -- --suite=owl-mobibench --mobibench-limit=5 --reasoner=pyling
 ```
 
+The GitHub Actions performance workflow runs both `pyling` and `fuxi` for the
+examples suite and the full MobiBench OWL2RL suite. It writes JSON, CSV, and
+Markdown reports to the `performance-reports` artifact and includes the Markdown
+summary in the workflow run summary. The workflow fails if FuXi is skipped
+entirely, but individual benchmark case failures remain visible in the report.
+
 Disable lazy installation, or supply a dedicated Python executable or checkout
 path:
 
