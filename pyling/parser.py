@@ -338,6 +338,10 @@ class Parser:
         return normal, None, qrule
 
     def _make_rule(self, first: Term, second: Term, is_forward: bool) -> Rule:
+        if isinstance(second, Literal) and second.datatype == XSD_NS + "boolean" and second.lexical in {"true", "1"}:
+            if not isinstance(first, GraphTerm):
+                raise N3SyntaxError("rule head must be a formula", self.peek().pos)
+            return Rule([], first.triples, True) if is_forward else Rule(first.triples, [], False)
         if isinstance(second, Literal) and second.datatype == XSD_NS + "boolean" and second.lexical in {"false", "0"}:
             if not isinstance(first, GraphTerm):
                 raise N3SyntaxError("rule premise must be a formula", self.peek().pos)

@@ -53,6 +53,7 @@ coverage.xml
 .pytest_cache/
 cover/
 .rdf-test-suite-cache/
+performance-reports/
 node_modules/
 
 # Translations

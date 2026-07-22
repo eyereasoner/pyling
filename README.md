@@ -192,6 +192,10 @@ npm run perf -- --csv > perf-results.csv
 OWL 2 RL support can be benchmarked with the MobiBench OWL2RL archive. pyling
 loads the RDFJS inference engine's OWL2RL N3 rules from
 `https://raw.githubusercontent.com/pietercolpaert/rdfjs-inference-engine/refs/heads/main/rules/owl2rl/owl2rl-eyeling.n3`.
+For the same MobiBench cases, FuXi uses its built-in OWL/DLP setup instead of
+that Eyeling-specific N3 ruleset. This keeps each reasoner on its intended OWL
+path: pyling exercises runtime-loaded N3 rules, while FuXi exercises the OWL
+rule generation shipped with FuXi.
 
 ```bash
 npm run perf -- --suite=owl-mobibench --mobibench-limit=5 --reasoner=pyling

@@ -42,6 +42,8 @@ class BenchmarkCase:
     label: str
     sources: tuple[str, ...]
     source_paths: tuple[Path, ...] = ()
+    fuxi_sources: tuple[str, ...] | None = None
+    fuxi_mode: str = "n3"
     rdf: bool = False
     input_format: str | None = None
     suite: str = "examples"
@@ -193,7 +195,16 @@ def discover_mobibench_cases(args: argparse.Namespace) -> list[BenchmarkCase]:
             else:
                 continue
             label = one_line(metadata.get("testcase.description", case_id))[:80] or case_id
-            cases.append(BenchmarkCase(f"mobibench-{case_id}", label, (rules, premise), suite="owl-mobibench"))
+            cases.append(
+                BenchmarkCase(
+                    f"mobibench-{case_id}",
+                    label,
+                    (rules, premise),
+                    fuxi_sources=(premise,),
+                    fuxi_mode="owl",
+                    suite="owl-mobibench",
+                )
+            )
             if args.mobibench_limit and len(cases) >= args.mobibench_limit:
                 break
     return cases
@@ -370,15 +381,29 @@ def ensure_fuxi_for_run(args: argparse.Namespace) -> str | None:
 
     venv = Path(args.fuxi_venv).resolve()
     python = fuxi_venv_python(venv)
-    if not python.exists():
-        bootstrap = find_python_313()
+    bootstrap = find_python_313()
+    if not python.exists() or not python_module_available(str(python), "pip"):
         if bootstrap is None:
             return "FuXi requires Python >=3.13; no python3.13 executable was found"
+        has_ensurepip = python_module_available(bootstrap, "ensurepip")
+        has_pip = python_module_available(bootstrap, "pip")
+        if not has_ensurepip and not has_pip:
+            return (
+                f"{bootstrap} does not provide ensurepip or pip. Install the Python 3.13 venv package "
+                "(for example: sudo apt install python3.13-venv) or provide FUXI_PYTHON."
+            )
         venv.parent.mkdir(parents=True, exist_ok=True)
         print(f"Installing FuXi benchmark environment in {venv}", file=sys.stderr)
-        run_install_command([bootstrap, "-m", "venv", str(venv)], args.timeout)
-        run_install_command([str(python), "-m", "pip", "install", "--upgrade", "pip"], args.timeout)
-        run_install_command([str(python), "-m", "pip", "install", args.fuxi_package], args.timeout)
+        command = [bootstrap, "-m", "venv"]
+        if python.exists():
+            command.append("--clear")
+        if not has_ensurepip:
+            command.extend(["--without-pip", "--system-site-packages"])
+        command.append(str(venv))
+        run_install_command(command, args.timeout)
+
+    run_install_command([str(python), "-m", "pip", "install", "--upgrade", "pip"], args.timeout)
+    run_install_command([str(python), "-m", "pip", "install", args.fuxi_package], args.timeout)
 
     args.fuxi_python = str(python)
     ok, reason = fuxi_available(args)
@@ -402,6 +427,15 @@ def find_python_313() -> str | None:
         if proc.returncode == 0:
             return candidate
     return None
+
+
+def python_module_available(python: str, module: str) -> bool:
+    proc = subprocess.run(
+        [python, "-c", f"import {module}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc.returncode == 0
 
 
 def run_install_command(command: list[str], timeout: float) -> None:
@@ -434,12 +468,13 @@ def run_pyling_once(case: BenchmarkCase, args: argparse.Namespace) -> Sample:
 def run_fuxi_once(case: BenchmarkCase, args: argparse.Namespace) -> Sample:
     code = FUXI_RUNNER
     env = fuxi_env(args)
+    sources = case.fuxi_sources if case.fuxi_sources is not None else case.sources
     with tempfile.NamedTemporaryFile("w", suffix=".n3", encoding="utf8", delete=False) as temp:
-        temp.write("\n\n".join(case.sources))
+        temp.write("\n\n".join(sources))
         temp_path = temp.name
     try:
         proc = subprocess.run(
-            [args.fuxi_python, "-c", code, temp_path],
+            [args.fuxi_python, "-c", code, temp_path, case.fuxi_mode],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -472,18 +507,31 @@ import time
 from pathlib import Path
 
 from rdflib import Graph
-from fuxi.Horn.HornRules import network_from_n3
 from fuxi.Rete.Util import generate_token_set
 
 path = Path(sys.argv[1])
+mode = sys.argv[2]
 source = path.read_text(encoding="utf8")
 graph = Graph()
 start = time.perf_counter()
 graph.parse(data=source, format="n3", publicID=str(path.resolve()))
-network = network_from_n3(graph)
+if mode == "owl":
+    from fuxi.Rete.RuleStore import setup_rule_store
+
+    _store, _rule_graph, network = setup_rule_store(make_network=True)
+    setup_dlp = getattr(network, "setup_description_logic_programming", None)
+    if setup_dlp is None:
+        setup_dlp = getattr(network, "setupDescriptionLogicProgramming")
+    setup_dlp(graph, add_pd_semantics=True, construct_network=True)
+else:
+    from fuxi.Horn.HornRules import network_from_n3
+
+    network = network_from_n3(graph)
 network.feed_facts_to_add(generate_token_set(graph))
 elapsed = (time.perf_counter() - start) * 1000
 inferred = getattr(network, "inferred_facts", None)
+if inferred is None:
+    inferred = getattr(network, "inferredFacts", None)
 print(json.dumps({
     "total_ms": elapsed,
     "facts": len(graph),

@@ -160,6 +160,15 @@ def test_backward_rule_satisfies_forward_body():
     assert ":alice :canVote true ." in out
 
 
+def test_backward_rule_accepts_true_body_base_case():
+    out = reason("""
+@prefix : <http://example.org/> .
+{ 0 :fibonacci 0 } <= true .
+{ 0 :fibonacci ?n } => { :answer :value ?n } .
+""")
+    assert ":answer :value 0 ." in out
+
+
 def test_dynamic_log_implies():
     out = reason("""
 @prefix : <http://example.org/> .
