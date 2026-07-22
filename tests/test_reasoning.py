@@ -1,6 +1,8 @@
 import asyncio
+import re
 import subprocess
 import sys
+from pathlib import Path
 import pytest
 
 from pyling import (
@@ -20,6 +22,13 @@ from pyling import (
 )
 
 EX = "http://example.org/"
+
+
+def fibonacci_number(n: int) -> int:
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
 
 
 def test_forward_rule_basic():
@@ -167,6 +176,37 @@ def test_backward_rule_accepts_true_body_base_case():
 { 0 :fibonacci ?n } => { :answer :value ?n } .
 """)
     assert ":answer :value 0 ." in out
+
+
+def test_memoized_numeric_backward_recursion_scales_to_fibonacci_1000():
+    out = reason("""
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+@prefix math: <http://www.w3.org/2000/10/swap/math#> .
+@prefix : <https://eyereasoner.github.io/eye/reasoning#> .
+:fibonacci log:memoize true .
+{ 0 :fibonacci 0 } <= true .
+{ 1 :fibonacci 1 } <= true .
+{ ?X :fibonacci ?Y } <= {
+    ?X math:greaterThan 1 .
+    (?X 1) math:difference ?X1 .
+    (?X 2) math:difference ?X2 .
+    ?X1 :fibonacci ?Y1 .
+    ?X2 :fibonacci ?Y2 .
+    (?Y1 ?Y2) math:sum ?Y .
+} .
+{ 1000 :fibonacci ?F } => { :answer :value ?F } .
+""")
+    assert "43466557686937456435688527675040625802564660517371780402481729089536555417949051890403879840079255169295922593080322634775209689623239873322471161642996440906533187938298969649928516003704476137795166849228875" in out
+
+
+def test_fibonacci_example_matches_eyeling_output_shape():
+    out = reason(Path("examples/fibonacci.n3").read_text(encoding="utf8"))
+    assert ":test :is {" in out
+    assert "10 :fibonacci 55 ." in out
+    assert "100 :fibonacci 354224848179261915075 ." in out
+    match = re.search(r"10000 :fibonacci ([0-9]+) \.", out)
+    assert match
+    assert int(match.group(1)) == fibonacci_number(10000)
 
 
 def test_dynamic_log_implies():

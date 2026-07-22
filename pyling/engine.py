@@ -17,6 +17,7 @@ from .terms import (
     LOG_IMPLIES,
     LOG_MEMOIZE,
     LOG_OUTPUT_STRING,
+    MATH_NS,
     OWL_DIFFERENT_FROM,
     OWL_SAME_AS,
     RDF_FIRST,
@@ -141,6 +142,7 @@ class Engine:
         # JS reference engine). See _extract_memoize_declarations and solve().
         self._memoized_predicates: set[str] = set()
         self._predicate_memo_tables: dict[tuple, dict[str, dict[str, Any]]] = {}
+        self._bottom_up_memo_active: set[tuple[str, int]] = set()
         self._extract_memoize_declarations()
 
     def term_to_n3(self, term: Term) -> str:
@@ -577,6 +579,113 @@ class Engine:
         entry["answer_keys"].add(key)
         entry["answers"].append(answer)
 
+    def _integer_literal_value(self, term: Term) -> int | None:
+        term = self.deref(term, {})
+        if not isinstance(term, Literal) or term.datatype != XSD_NS + "integer":
+            return None
+        try:
+            return int(term.lexical)
+        except ValueError:
+            return None
+
+    def _memo_goal_for_integer_subject(self, predicate: Iri, value: int) -> Triple:
+        return Triple(Literal(str(value), XSD_NS + "integer", bare=True), predicate, Var("_memo_answer"))
+
+    def _rules_are_bottom_up_numeric_safe(self, predicate: Iri, rules: list[Rule]) -> bool:
+        has_recursive_rule = False
+        difference = Iri(MATH_NS + "difference")
+        for rule in rules:
+            head = rule.premise[0]
+            if not rule.conclusion:
+                continue
+            if not isinstance(head.s, Var):
+                return False
+            smaller_subject_vars: set[str] = set()
+            for tr in rule.conclusion:
+                if (
+                    tr.p == difference
+                    and isinstance(tr.s, ListTerm)
+                    and len(tr.s.elems) == 2
+                    and isinstance(tr.s.elems[0], Var)
+                    and tr.s.elems[0].name == head.s.name
+                    and isinstance(tr.o, Var)
+                ):
+                    step = self._integer_literal_value(tr.s.elems[1])
+                    if step is not None and step > 0:
+                        smaller_subject_vars.add(tr.o.name)
+                if tr.p == predicate:
+                    has_recursive_rule = True
+                    if not isinstance(tr.s, Var) or tr.s.name not in smaller_subject_vars:
+                        return False
+        return has_recursive_rule
+
+    def _try_bottom_up_numeric_memo(self, goal: Triple) -> dict[str, Any] | None:
+        """Materialize memoized integer-subject answers bottom-up.
+
+        This covers dynamic-programming-shaped backward predicates such as the
+        Eyeling Fibonacci example. It only activates for calls like
+        `N :predicate ?answer`, where `N` is a non-negative integer and the
+        object is unbound. Other memoized predicates keep the normal prover
+        behavior.
+        """
+        if not isinstance(goal.p, Iri) or not isinstance(goal.o, Var):
+            return None
+        target = self._integer_literal_value(goal.s)
+        if target is None or target < 0:
+            return None
+        active_key = (goal.p.value, target)
+        if active_key in self._bottom_up_memo_active:
+            return None
+
+        relevant_rules = [
+            rule
+            for rule in self.backward_rules
+            if len(rule.premise) == 1
+            and isinstance(rule.premise[0].p, Iri)
+            and rule.premise[0].p.value == goal.p.value
+        ]
+        if not relevant_rules:
+            return None
+        if not self._rules_are_bottom_up_numeric_safe(goal.p, relevant_rules):
+            return None
+
+        self._bottom_up_memo_active.add(active_key)
+        try:
+            for value in range(target + 1):
+                row_goal = self._memo_goal_for_integer_subject(goal.p, value)
+                row_key = self._predicate_memo_key(row_goal)
+                if row_key is None:
+                    return None
+                _table, row_entry = self._predicate_memo_lookup(row_key)
+                if row_entry["complete"]:
+                    continue
+                if row_entry["computing"]:
+                    return None
+                row_entry["computing"] = True
+                row_entry["unsafe"] = False
+                row_entry["answers"] = []
+                row_entry["answer_keys"] = set()
+                try:
+                    for rule in relevant_rules:
+                        std = self.standardize_apart(rule)
+                        local = self.unify_triple(row_goal, std.premise[0], {})
+                        if local is None:
+                            continue
+                        for answer_subst in self.solve(list(std.conclusion), local, 0, False):
+                            self._store_predicate_memo_answer(row_entry, row_goal, answer_subst)
+                    if row_entry["unsafe"]:
+                        return None
+                    row_entry["complete"] = True
+                finally:
+                    row_entry["computing"] = False
+            target_key = self._predicate_memo_key(goal)
+            if target_key is None:
+                return None
+            _table, target_entry = self._predicate_memo_lookup(target_key)
+            return target_entry if target_entry["complete"] else None
+        finally:
+            self._bottom_up_memo_active.discard(active_key)
+
     # ------------------------------------------------------------------
     # Solving and unification
     # ------------------------------------------------------------------
@@ -631,6 +740,10 @@ class Engine:
             memo_key = self._predicate_memo_key(first)
             if memo_key is not None:
                 table, memo_entry = self._predicate_memo_lookup(memo_key)
+                if not memo_entry["complete"] and not memo_entry["computing"]:
+                    bottom_up_entry = self._try_bottom_up_numeric_memo(first)
+                    if bottom_up_entry is not None:
+                        memo_entry = bottom_up_entry
                 if memo_entry["complete"]:
                     for answer in memo_entry["answers"]:
                         nxt = self.unify_triple(first, answer, subst)

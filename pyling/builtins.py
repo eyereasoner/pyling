@@ -102,6 +102,15 @@ def _term_num(t: Term) -> Decimal | None:
     return numeric_value(t)
 
 
+def _term_int(t: Term) -> int | None:
+    if isinstance(t, Literal) and literal_datatype(t) == XSD_NS + "integer":
+        try:
+            return int(t.lexical)
+        except ValueError:
+            return None
+    return None
+
+
 def _term_str(t: Term) -> str | None:
     if isinstance(t, Literal):
         return t.lexical
@@ -224,26 +233,41 @@ def _math_sum(ctx: BuiltinContext) -> list[Subst]:
     elems = _list_elems(ctx, ctx.goal.s)
     if elems is None:
         return []
+    values = [ctx.engine.apply_subst(e, ctx.subst) for e in elems]  # type: ignore[attr-defined]
+    datatype = _promoted_numeric_datatype(values)
+    if datatype == XSD_NS + "integer":
+        ints = [_term_int(e) for e in values]
+        if all(i is not None for i in ints):
+            return _bind_or_test(ctx, ctx.goal.o, Literal(str(sum(ints)), XSD_NS + "integer", bare=True))  # type: ignore[arg-type]
     total = Decimal(0)
-    for e in elems:
-        n = _term_num(ctx.engine.apply_subst(e, ctx.subst))  # type: ignore[attr-defined]
+    for e in values:
+        n = _term_num(e)
         if n is None:
             return []
         total += n
-    return _bind_or_test(ctx, ctx.goal.o, _typed_num_lit(total, _promoted_numeric_datatype(elems)))
+    return _bind_or_test(ctx, ctx.goal.o, _typed_num_lit(total, datatype))
 
 
 def _math_product(ctx: BuiltinContext) -> list[Subst]:
     elems = _list_elems(ctx, ctx.goal.s)
     if elems is None:
         return []
+    values = [ctx.engine.apply_subst(e, ctx.subst) for e in elems]  # type: ignore[attr-defined]
+    datatype = _promoted_numeric_datatype(values)
+    if datatype == XSD_NS + "integer":
+        ints = [_term_int(e) for e in values]
+        if all(i is not None for i in ints):
+            total_int = 1
+            for i in ints:
+                total_int *= i  # type: ignore[operator]
+            return _bind_or_test(ctx, ctx.goal.o, Literal(str(total_int), XSD_NS + "integer", bare=True))
     total = Decimal(1)
-    for e in elems:
-        n = _term_num(ctx.engine.apply_subst(e, ctx.subst))  # type: ignore[attr-defined]
+    for e in values:
+        n = _term_num(e)
         if n is None:
             return []
         total *= n
-    return _bind_or_test(ctx, ctx.goal.o, _typed_num_lit(total, _promoted_numeric_datatype(elems)))
+    return _bind_or_test(ctx, ctx.goal.o, _typed_num_lit(total, datatype))
 
 
 def _binary_num(ctx: BuiltinContext, fn: Callable[[Decimal, Decimal], Decimal]) -> list[Subst]:
