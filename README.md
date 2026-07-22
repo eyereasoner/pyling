@@ -172,6 +172,46 @@ The W3C runner caches downloaded manifests and fixtures in
 `.rdf-test-suite-cache/`. All RDF 1.2 syntax cases in the configured N-Triples,
 N-Quads, Turtle, and TriG manifests are enabled.
 
+## Performance comparisons
+
+The comparison harness in `tools/compare_reasoners.py` benchmarks pyling and
+optional FuXi installations over shared N3 fixtures. FuXi is not installed in
+the main project environment. When the `fuxi` reasoner is selected for a
+benchmark run, the harness lazily creates `.cache/fuxi-venv` with Python 3.13
+and installs the `fuxi` package there. The default benchmark suite discovers
+selected `.n3` files from this repo's `examples/` directory. `--list` never
+installs dependencies.
+
+```bash
+npm run perf -- --list
+npm run perf -- --case=socrates --reasoner=pyling --iterations=5 --warmup=2
+npm run perf -- --case=socrates --reasoner=pyling,fuxi --json
+npm run perf -- --csv > perf-results.csv
+```
+
+OWL 2 RL support can be benchmarked with the MobiBench OWL2RL archive. pyling
+loads the RDFJS inference engine's OWL2RL N3 rules from
+`https://raw.githubusercontent.com/pietercolpaert/rdfjs-inference-engine/refs/heads/main/rules/owl2rl/owl2rl-eyeling.n3`.
+
+```bash
+npm run perf -- --suite=owl-mobibench --mobibench-limit=5 --reasoner=pyling
+```
+
+Disable lazy installation, or supply a dedicated Python executable or checkout
+path:
+
+```bash
+npm run perf -- --reasoner=fuxi --no-install-fuxi
+FUXI_PYTHON=/path/to/venv/bin/python npm run perf -- --reasoner=fuxi
+FUXI_PYTHONPATH=/path/to/FuXi-reincarnate/lib npm run perf -- --reasoner=fuxi
+```
+
+Additional fixtures can be added without editing the script:
+
+```bash
+npm run perf -- --fixture=my-case=../eyeling/examples/deep-taxonomy-100.n3
+```
+
 ## RDF Message Logs
 
 Whole-log replay:

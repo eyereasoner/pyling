@@ -1,0 +1,49 @@
+name: Performance smoke tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark-smoke:
+    name: pyling benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package
+        run: python -m pip install -e ".[test]"
+
+      - name: Run example benchmark smoke
+        run: >
+          python tools/compare_reasoners.py
+          --case=socrates
+          --case=deep-taxonomy-10000
+          --reasoner=pyling
+          --iterations=1
+          --warmup=0
+          --max-iterations=10000
+          --json
+
+      - name: Run OWL2RL MobiBench smoke
+        run: >
+          python tools/compare_reasoners.py
+          --suite=owl-mobibench
+          --mobibench-limit=1
+          --reasoner=pyling
+          --iterations=1
+          --warmup=0
+          --max-iterations=100
+          --json
