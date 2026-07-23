@@ -173,9 +173,12 @@ The main exported term classes are `Iri`, `Literal`, `Var`, `Blank`, `ListTerm`,
 Publishable notebooks live in `docs/notebooks/`:
 
 - `01-rdflib-reasoning.ipynb` shows RDFLib graph input and RDFLib graph output.
-- `02-owl-style-rules.ipynb` shows runtime-loaded OWL-style N3 rules.
+- `02-owl-style-rules.ipynb` loads and runs the complete OWL 2 RL/RDF N3
+  profile maintained for Eyeling.
 - `03-neuro-symbolic-validation.ipynb` shows symbolic validation over facts
   extracted by a neural model.
+- `04-qudt-message-log.ipynb` automatically normalizes logarithmic QUDT
+  measurements from an RDF Message log.
 
 Run them locally with:
 
@@ -298,9 +301,12 @@ Python streaming API:
 ```python
 from pyling import reason_message_stream
 
-for result in reason_message_stream({"sources": [rules_n3, messages_trig]}, {"rdf": True}):
+for result in reason_message_stream({"sources": [rules_n3, messages_trig]}):
     print(result.closure_n3)
 ```
+
+The [QUDT notebook](docs/notebooks/04-qudt-message-log.ipynb) shows this API
+applying automatic unit-normalization rules independently to each message.
 
 The replay vocabulary uses:
 
@@ -323,10 +329,23 @@ Built-in coverage includes common predicates in these namespaces:
 - `math:` numeric comparison and arithmetic, plus common trig functions
 - `string:` contains/matches/replace/format/length/comparison helpers
 - `list:` first/rest/member/append/reverse/sort and related helpers
-- `log:` includes/notIncludes/semantics/conjunction/skolem/uri and equality helpers
+- `log:` includes/notIncludes/content/semantics/semanticsOrError/conjunction,
+  plus skolem/URI and equality helpers
 - `dt:` datatype inspection, validation, value comparison, canonicalization
 - `crypto:` md5/sha/sha256/sha512
 - `time:` year/month/day/hour/minute/second/timeZone/localTime
+
+`log:content` retrieves an HTTP(S) resource as a string. `log:semantics`
+retrieves and parses an N3 document as a formula, resolving relative IRIs
+against the final URL after redirects. Requests send N3/RDF `Accept` headers
+and a versioned `User-Agent`, use a 30-second timeout, and reject responses
+larger than 32 MiB. `log:semanticsOrError` binds an error string when retrieval
+or parsing fails.
+
+HTTP dereferencing can access any network location reachable by the process.
+Applications handling untrusted N3 should restrict access with Python
+`urllib` audit hooks or a custom installed opener, following
+[RDFLib's security guidance](https://rdflib.readthedocs.io/en/latest/security_considerations/).
 
 Registering a custom built-in:
 
@@ -386,9 +405,9 @@ python tools/run_notation3tests.py /path/to/notation3tests
 python tools/run_notation3tests.py --clone
 ```
 
-The runner defaults to `NETWORKING=0`, because this native port does not
-dereference Web resources. It removes stale `.out` files for the 19 skipped
-network fixtures so the reported score covers only tests actually executed.
+The runner defaults to `NETWORKING=1` so the networking fixtures for
+`log:content`, `log:semantics`, and `log:semanticsOrError` are included. Set
+`NETWORKING=0` explicitly for an offline conformance run.
 
 You can also have `pytest` run the external suite by setting:
 

@@ -59,11 +59,12 @@ jobs:
           </head>
           <body>
             <h1>pyling notebook examples</h1>
-            <p>Executable examples for RDFLib integration, runtime OWL-style rules, and neuro-symbolic validation.</p>
+            <p>Executable examples for RDFLib integration, OWL 2 RL reasoning, neuro-symbolic validation, and QUDT conversion over RDF Message logs.</p>
             <ul>
               <li><a href="notebooks/01-rdflib-reasoning.html">RDFLib graphs with pyling</a></li>
-              <li><a href="notebooks/02-owl-style-rules.html">OWL-style materialization with runtime N3 rules</a></li>
+              <li><a href="notebooks/02-owl-style-rules.html">OWL 2 RL materialization with the Eyeling ruleset</a></li>
               <li><a href="notebooks/03-neuro-symbolic-validation.html">Neuro-symbolic validation over extracted knowledge</a></li>
+              <li><a href="notebooks/04-qudt-message-log.html">Automatic QUDT conversion over an RDF Message log</a></li>
             </ul>
           </body>
           </html>
