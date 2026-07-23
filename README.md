@@ -1,22 +1,28 @@
 # pyling
 
-A Python port of the Eyeling Notation3 reasoner.
+[![PyPI version](https://img.shields.io/pypi/v/pyling-n3.svg)](https://pypi.org/project/pyling-n3/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pyling-n3.svg)](https://pypi.org/project/pyling-n3/)
+[![License](https://img.shields.io/pypi/l/pyling-n3.svg)](LICENSE)
 
-RDF/Turtle/TriG compatibility through `rdflib`, RDF 1.2 surface-syntax checks, and RDF Message Log parsing/streaming.
+`pyling` is a Python port of the [Eyeling](https://github.com/eyereasoner/eyeling)
+Notation3 reasoner. Install it from PyPI as `pyling-n3`, import it as
+`pyling`, and use it to run N3 rules over RDF data from Python code, notebooks,
+or the command line.
 
-The [Eyeling](https://github.com/eyereasoner/eyeling) repositories remains the main implementation. 
+It is useful when you want a small Python dependency for:
 
-## Requirements
+- deriving facts with Notation3 rules
+- mixing N3 reasoning with RDFLib graphs
+- reading Turtle, TriG, N-Triples, and N-Quads through RDFLib
+- checking RDF 1.2 surface syntax in Python tooling
+- replaying RDF Message Logs as whole logs or as message streams
 
-- Python 3.10 or newer
-- `pip`
-- `rdflib` is installed automatically from `pyproject.toml`
-- `pytest` is needed only for the test suite
+The Eyeling repositories remain the main implementation; `pyling` gives Python
+projects a native package interface to the same style of N3 reasoning.
 
 ## Install in your project
 
-After pyling is published to PyPI as `pyling-n3`, install it with Python's
-standard package installer:
+Install the published package from [PyPI](https://pypi.org/project/pyling-n3/):
 
 ```bash
 python -m pip install pyling-n3
@@ -33,12 +39,35 @@ pdm add pyling-n3
 The distribution package is named `pyling-n3`; the Python import package and
 CLI command remain `pyling`.
 
-Until the package is published on PyPI, install directly from GitHub:
+```python
+from pyling import reason
+
+program = """
+@prefix : <http://example.org/> .
+
+:Socrates a :Man .
+{ ?x a :Man } => { ?x a :Mortal } .
+"""
+
+print(reason(program))
+```
+
+```bash
+pyling rules-and-facts.n3
+```
+
+For an unreleased development snapshot, install directly from GitHub:
 
 ```bash
 python -m pip install "pyling-n3 @ git+https://github.com/eyereasoner/pyling.git"
 uv add "pyling-n3 @ git+https://github.com/eyereasoner/pyling.git"
 ```
+
+## Requirements
+
+- Python 3.10 or newer
+- `rdflib`, installed automatically with `pyling-n3`
+- `pytest`, needed only for the test suite
 
 ## Install from a checkout
 
@@ -222,113 +251,16 @@ N-Quads, Turtle, and TriG manifests are enabled.
 
 ## Performance comparisons
 
-The comparison harness in `tools/compare_reasoners.py` benchmarks pyling and
-optional FuXi installations over shared N3 fixtures. FuXi is not installed in
-the main project environment. When the `fuxi` reasoner is selected for a
-benchmark run, the harness lazily creates `.cache/fuxi-venv` with Python 3.13
-and installs the `fuxi` package there. The default benchmark suite discovers
-selected `.n3` files from this repo's `examples/` directory. `--list` never
-installs dependencies.
+See the
+[performance report](https://github.com/eyereasoner/pyling/blob/main/PERFORMANCE.md)
+for measured comparisons with
+[Eyeling](https://github.com/eyereasoner/eyeling) and FuXi, including which runs
+completed, whether their outputs were comparable, the benchmark method, and
+reproduction commands.
 
 ```bash
 npm run perf -- --list
-npm run perf -- --case=socrates --reasoner=pyling --iterations=5 --warmup=2
-npm run perf -- --case=socrates --reasoner=pyling,fuxi --json
-npm run perf -- --csv > perf-results.csv
-```
-
-OWL 2 RL support can be benchmarked with the MobiBench OWL2RL archive. pyling
-loads the RDFJS inference engine's OWL2RL N3 rules from
-`https://raw.githubusercontent.com/pietercolpaert/rdfjs-inference-engine/refs/heads/main/rules/owl2rl/owl2rl-eyeling.n3`.
-For the same MobiBench cases, FuXi uses its built-in OWL/DLP setup instead of
-that Eyeling-specific N3 ruleset. This keeps each reasoner on its intended OWL
-path: pyling exercises runtime-loaded N3 rules, while FuXi exercises the OWL
-rule generation shipped with FuXi.
-
-```bash
-npm run perf -- --suite=owl-mobibench --mobibench-limit=5 --reasoner=pyling
-npm run perf:mobibench
-```
-
-Latest local MobiBench OWL2RL run, measured with one iteration and no warmup on
-2026-07-22:
-
-| Reasoner | Cases | Failures | Median ms/case | Cases deriving facts | Total derived facts |
-|---|---:|---:|---:|---:|---:|
-| pyling | 273 | 0 | 85.88 | 273 | 33,402 |
-| FuXi | 273 | 0 | 95.93 | 43 | 221 |
-
-Interpret these numbers as a profile of each configured reasoning path, not as
-a strict semantic equivalence result. pyling materializes with the runtime-loaded
-OWL2RL N3 rules, which include broad datatype and RDF-based entailment rules.
-FuXi runs its built-in OWL/DLP translation, which is fast and useful for many
-structural OWL cases but derives no facts for many datatype-heavy MobiBench
-cases. For example, `rdfbased-sem-rdfs-subclass-trans` derives facts in both
-engines, while the early `rdfbased-dat-*` cases mostly derive only in pyling.
-
-The GitHub Actions performance workflow runs both `pyling` and `fuxi` for the
-examples suite only. Full MobiBench is intentionally local-only through
-`npm run perf:mobibench`, because it is larger and less suitable for normal pull
-request feedback. Both paths write JSON, CSV, and Markdown reports to
-`performance-reports`.
-
-The slowest pyling cases in the latest completed full run were concentrated in
-a small set of RDF-based OWL patterns:
-
-| Case | pyling median ms | Derived facts |
-|---|---:|---:|
-| `mobibench-rdfbased-xtr-reflection-subclasses` | 133,292.61 | 290 |
-| `mobibench-rdfbased-sem-bool-intersection-inst-comp` | 31,885.76 | 105 |
-| `mobibench-rdfbased-sem-bool-intersection-inst-expr` | 31,301.35 | 106 |
-| `mobibench-rdfbased-sem-bool-intersection-term` | 30,417.15 | 104 |
-| `mobibench-rdfbased-sem-key-def` | 3,042.21 | 116 |
-
-An interrupted full rerun stopped inside `pyling.engine.Engine.solve`, after
-recursive goal solving had already entered a deep multi-premise OWL rule. That
-matches the profile from the completed report: pyling is not uniformly slow,
-but the current generic N3 fixpoint solver can spend disproportionate time on
-rules with broad joins over RDF lists, subclass reflection, intersections, and
-keys. The next performance work should focus on predicate indexing for rule
-bodies, join ordering based on bound variables and candidate counts, and
-deduplication of equivalent substitutions before recursive goal expansion.
-
-The examples suite is useful for implementation regressions. After the
-memoized Fibonacci fix, pyling completes `examples/fibonacci.n3` and derives
-the expected query formula containing `F(0)`, `F(1)`, `F(10)`, `F(100)`,
-`F(1000)`, and `F(10000)`. FuXi's generic N3 rule loader does not currently run
-that file because it rejects the literal-subject rule shape used by the example.
-
-Disable lazy installation, or supply a dedicated Python executable or checkout
-path:
-
-```bash
-npm run perf -- --reasoner=fuxi --no-install-fuxi
-FUXI_PYTHON=/path/to/venv/bin/python npm run perf -- --reasoner=fuxi
-FUXI_PYTHONPATH=/path/to/FuXi-reincarnate/lib npm run perf -- --reasoner=fuxi
-```
-
-FuXi currently requires Python 3.13 or newer. If your system `python3` is older,
-install a 3.13 interpreter and let the benchmark harness create
-`.cache/fuxi-venv` from it. Two practical options:
-
-```bash
-# uv-managed Python, no system Python upgrade needed
-uv python install 3.13
-FUXI_PYTHON="$(uv python find 3.13)" npm run perf -- --reasoner=fuxi --case=socrates
-
-# pyenv-managed Python
-pyenv install 3.13
-FUXI_PYTHON="$(pyenv prefix 3.13)/bin/python" npm run perf -- --reasoner=fuxi --case=socrates
-```
-
-After Python 3.13 is available, `npm run perf -- --reasoner=fuxi ...` installs
-the `fuxi` package lazily into `.cache/fuxi-venv` and reuses that environment on
-later benchmark runs.
-
-Additional fixtures can be added without editing the script:
-
-```bash
-npm run perf -- --fixture=my-case=../eyeling/examples/deep-taxonomy-100.n3
+npm run perf -- --case=socrates --reasoner=pyling,eyeling,fuxi
 ```
 
 ## RDF Message Logs
@@ -463,62 +395,8 @@ You can also have `pytest` run the external suite by setting:
 NOTATION3TESTS_DIR=/path/to/notation3tests python -m pytest -q
 ```
 
-## Packaging and release
-
-The package metadata lives in `pyproject.toml`; releases are tracked in
-`CHANGELOG.md`. PyPI is the Python package index, `pip` is the default installer
-users will normally run, and `build` plus `twine` are the local maintainer tools
-used to create and upload distributions. The `Package build` GitHub Actions
-workflow builds the wheel and sdist, runs `twine check`, and uploads the
-generated distributions as an artifact.
-
-Build and inspect a release locally:
-
-```bash
-python -m pip install -e ".[build,test]"
-python -m pytest -q
-python -m build
-twine check dist/pyling_n3-*
-```
-
-Publish first to TestPyPI:
-
-```bash
-twine upload --repository testpypi dist/pyling_n3-*
-python -m pip install \
-  --index-url https://test.pypi.org/simple/ \
-  --extra-index-url https://pypi.org/simple/ \
-  pyling-n3
-```
-
-If that install works in a fresh environment, publish the same checked
-distributions to PyPI:
-
-```bash
-twine upload dist/pyling_n3-*
-python -m pip install pyling-n3
-```
-
-For GitHub Actions releases, prefer PyPI Trusted Publishing over storing a
-long-lived API token in repository secrets. Configure a PyPI trusted publisher
-for the `eyereasoner/pyling` repository and the release workflow file, then use
-`pypa/gh-action-pypi-publish` with `id-token: write` permissions.
-
-Release checklist:
-
-1. Update `CHANGELOG.md` and move the relevant entries from `Unreleased` to the
-   new version.
-2. Update `version` in `pyproject.toml`.
-3. Run tests, conformance checks, notebook build, and package build locally or
-   in GitHub Actions.
-4. Confirm the published package name, ownership, license metadata, and long
-   README rendering on TestPyPI.
-5. Create a signed git tag, for example `v0.1.0`.
-6. Upload to TestPyPI and install from TestPyPI in a fresh environment.
-7. Upload the same checked distributions to PyPI.
-8. Create a GitHub release from the tag and include the changelog notes.
-
-## Development notes
+## Notes
 
 - `rdflib` is used only for RDF/Turtle/TriG/N-Triples/N-Quads parsing. N3 rules and formulas are parsed by the local parser.
 - RDF Message Logs are split and replayed before reasoning so message boundaries, empty heartbeat messages, and per-message blank-node scope are preserved.
+- Packaging and publishing it on Pypi happens via a github action: create a new tag and release. Make sure the `pyproject.toml` is correct.

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Performance comparison harness for pyling and FuXi.
+"""Performance comparison harness for pyling, Eyeling, and FuXi.
 
-The harness keeps competitors optional: pyling is run in-process, while FuXi is
-run in a subprocess so callers can point it at a virtualenv or checkout without
-mutating this project.
+The harness keeps competitors optional: pyling is run in-process, while
+Eyeling and FuXi run in subprocesses so callers can point them at existing
+installations or checkouts without mutating this project.
 """
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ if str(ROOT) not in sys.path:
 DEFAULT_TIMEOUT_SECONDS = 120.0
 DEFAULT_FUXI_VENV = ROOT / ".cache/fuxi-venv"
 DEFAULT_FUXI_PACKAGE = "fuxi"
+DEFAULT_EYELING_PATH = ROOT.parent / "eyeling"
 DEFAULT_MOBIBENCH_URL = "https://william-vw.github.io/mobibench/web/res/owl/conf/testsuite-owl2-rdfbased.zip"
 DEFAULT_OWL2RL_RULES_URL = "https://raw.githubusercontent.com/pietercolpaert/rdfjs-inference-engine/refs/heads/main/rules/owl2rl/owl2rl-eyeling.n3"
 OWL2RL_SUBSUITE_PREFIX = "testsuite-owl2-rdfbased/subsuites/owl2rl/"
@@ -123,7 +124,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--reasoner", action="append", default=[], help="reasoner id to run; repeat or comma-separate")
     parser.add_argument("--iterations", type=int, default=3, help="measured iterations per case/reasoner")
     parser.add_argument("--warmup", type=int, default=1, help="warmup iterations per case/reasoner")
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="FuXi subprocess timeout in seconds")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="competitor subprocess timeout in seconds")
     parser.add_argument("--max-iterations", type=int, default=1000, help="pyling max fixpoint iterations")
     parser.add_argument("--include-input-facts", action="store_true", help="include explicit facts in pyling closure output")
     parser.add_argument("--json", action="store_true", help="print JSON")
@@ -137,6 +138,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--fuxi-venv", default=os.environ.get("FUXI_VENV", str(DEFAULT_FUXI_VENV)), help="venv path used for lazy FuXi installation")
     parser.add_argument("--fuxi-package", default=os.environ.get("FUXI_PACKAGE", DEFAULT_FUXI_PACKAGE), help="pip requirement installed into the lazy FuXi venv")
     parser.add_argument("--no-install-fuxi", action="store_true", help="skip lazy FuXi installation and report it as unavailable")
+    parser.add_argument("--eyeling-node", default=os.environ.get("EYELING_NODE", "node"), help="Node.js executable used for Eyeling")
+    parser.add_argument("--eyeling-path", default=os.environ.get("EYELING_PATH", str(DEFAULT_EYELING_PATH)), help="Eyeling package checkout or installation path")
     return parser.parse_args(argv)
 
 
@@ -299,6 +302,7 @@ def decode_xml(value: str) -> str:
 def discover_reasoners(args: argparse.Namespace) -> list[Reasoner]:
     return [
         Reasoner("pyling", "pyling in-process", pyling_available, run_pyling_once),
+        Reasoner("eyeling", "Eyeling subprocess", lambda: eyeling_available(args), run_eyeling_once),
         Reasoner("fuxi", "FuXi subprocess", lambda: fuxi_available(args), run_fuxi_once),
     ]
 
@@ -327,6 +331,24 @@ def fuxi_available(args: argparse.Namespace) -> tuple[bool, str | None]:
         return False, f"Python executable not found: {args.fuxi_python}"
     if proc.returncode != 0:
         return False, one_line(proc.stderr or proc.stdout or "FuXi import failed")
+    return True, None
+
+
+def eyeling_available(args: argparse.Namespace) -> tuple[bool, str | None]:
+    package_path = Path(args.eyeling_path).resolve()
+    code = "const e=require(process.argv[1]); if(typeof e.reasonStream!=='function') process.exit(2)"
+    try:
+        proc = subprocess.run(
+            [args.eyeling_node, "-e", code, str(package_path)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=min(args.timeout, 10.0),
+        )
+    except FileNotFoundError:
+        return False, f"Node.js executable not found: {args.eyeling_node}"
+    if proc.returncode != 0:
+        return False, one_line(proc.stderr or proc.stdout or f"Cannot load Eyeling from {package_path}")
     return True, None
 
 
@@ -498,6 +520,57 @@ def run_fuxi_once(case: BenchmarkCase, args: argparse.Namespace) -> Sample:
         derived=payload.get("derived"),
         closure_chars=payload.get("closure_chars"),
     )
+
+
+def run_eyeling_once(case: BenchmarkCase, args: argparse.Namespace) -> Sample:
+    package_path = Path(args.eyeling_path).resolve()
+    with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf8", delete=False) as temp:
+        json.dump({"sources": list(case.sources)}, temp)
+        temp_path = temp.name
+    try:
+        proc = subprocess.run(
+            [args.eyeling_node, "-e", EYELING_RUNNER, str(package_path), temp_path],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=args.timeout,
+        )
+    finally:
+        try:
+            Path(temp_path).unlink()
+        except OSError:
+            pass
+    if proc.returncode != 0:
+        raise RuntimeError(one_line(proc.stderr or proc.stdout or f"Eyeling exited {proc.returncode}"))
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Eyeling returned non-JSON output: {one_line(proc.stdout)}") from exc
+    return Sample(
+        total_ms=float(payload["total_ms"]),
+        facts=payload.get("facts"),
+        derived=payload.get("derived"),
+        closure_chars=payload.get("closure_chars"),
+    )
+
+
+EYELING_RUNNER = r"""
+const fs = require("node:fs");
+const { performance } = require("node:perf_hooks");
+
+const eyeling = require(process.argv[1]);
+const input = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const source = input.sources.length === 1 ? input.sources[0] : input;
+const start = performance.now();
+const result = eyeling.reasonStream(source);
+const elapsed = performance.now() - start;
+process.stdout.write(JSON.stringify({
+  total_ms: elapsed,
+  facts: result.facts.length,
+  derived: result.derived.length,
+  closure_chars: result.closureN3.length,
+}));
+"""
 
 
 FUXI_RUNNER = r"""

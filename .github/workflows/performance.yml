@@ -12,12 +12,18 @@ permissions:
 
 jobs:
   benchmark-comparison:
-    name: pyling vs FuXi
+    name: pyling vs Eyeling and FuXi
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Checkout Eyeling
+        uses: actions/checkout@v4
+        with:
+          repository: eyereasoner/eyeling
+          path: .cache/eyeling
 
       - name: Set up Python 3.13
         uses: actions/setup-python@v5
@@ -32,12 +38,14 @@ jobs:
         run: >
           python tools/compare_reasoners.py
           --suite=examples
-          --reasoner=pyling,fuxi
+          --reasoner=pyling,eyeling,fuxi
+          --eyeling-path=.cache/eyeling
           --iterations=1
           --warmup=0
-          --max-iterations=10000
+          --max-iterations=100000
           --timeout=600
           --allow-failures
+          --require-reasoner=eyeling
           --require-reasoner=fuxi
           --report-dir=performance-reports/examples
           --markdown
