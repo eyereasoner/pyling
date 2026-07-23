@@ -16,6 +16,7 @@ from .terms import (
     LOG_IMPLIED_BY,
     LOG_IMPLIES,
     LOG_MEMOIZE,
+    LOG_NS,
     LOG_OUTPUT_STRING,
     LOG_QUERY,
     MATH_NS,
@@ -40,6 +41,7 @@ from .terms import (
     numeric_value,
     rule_from_primitive,
     rule_to_primitive,
+    term_has_vars,
     term_from_primitive,
     term_to_primitive,
     triple_from_primitive,
@@ -123,10 +125,16 @@ class Engine:
         self.derived: list[Triple] = []
         self.forward_rules: list[Rule] = list(doc.forward_rules)
         self.backward_rules: list[Rule] = list(doc.backward_rules)
+        self._backward_predicates: set[str] = {
+            rule.premise[0].p.value
+            for rule in self.backward_rules
+            if len(rule.premise) == 1 and isinstance(rule.premise[0].p, Iri)
+        }
         self.query_rules: list[Rule] = list(doc.query_rules)
         self._rule_key_cache: dict[Rule, str] = {}
         self._rule_ids: set[str] = {self._rule_key(r) for r in self.forward_rules + self.backward_rules}
         self._fired_rule_bindings: set[str] = set()
+        self._rule_input_signatures: dict[Rule, tuple] = {}
         self._agenda_active = False
         self._agenda_queue: list[Triple] = []
         self._agenda_indexed_rules: set[Rule] = set()
@@ -137,6 +145,7 @@ class Engine:
         self._fresh_counter = 0
         self._std_counter = 0
         self._standardized_term_cache: dict[str, Term] = {}
+        self._rule_fact_view_active = True
         self.max_depth = int(self.options.get("max_depth", self.options.get("maxDepth", 100_000)))
         self.max_iterations = int(self.options.get("max_iterations", self.options.get("maxIterations", 1000)))
         self.skolem_salt = str(uuid.uuid4())
@@ -177,6 +186,17 @@ class Engine:
             number = numeric_value(term)
             if number is not None and not number.is_nan():
                 return ("literal-number", datatype, number)
+            if datatype in {XSD_NS + "date", XSD_NS + "dateTime"}:
+                import datetime
+
+                try:
+                    if datatype == XSD_NS + "dateTime":
+                        value = datetime.datetime.fromisoformat(term.lexical.replace("Z", "+00:00"))
+                    else:
+                        value = datetime.date.fromisoformat(term.lexical)
+                    return ("literal-temporal", datatype, value)
+                except ValueError:
+                    pass
             return ("literal", datatype, (term.lang or "").lower(), term.lexical)
         if isinstance(term, ListTerm):
             return term if all(self._lookup_key(e) is not None for e in term.elems) else None
@@ -268,6 +288,15 @@ class Engine:
         # owl:differentFrom self is false in Eyeling style tests only when queried through sameAs? Keep as normal fact.
         if tr in self._fact_set:
             return False
+        if (
+            not any(term_has_vars(term) for term in (tr.s, tr.p, tr.o))
+            and any(self._has_numeric_literal(term) for term in (tr.s, tr.p, tr.o))
+        ):
+            for existing in self._candidate_facts(tr):
+                if self._fact_terms_equal(tr.s, existing.s) and self._fact_terms_equal(
+                    tr.p, existing.p
+                ) and self._fact_terms_equal(tr.o, existing.o):
+                    return False
         self._fact_set.add(tr)
         self._ensure_fact_indexes_current()
         self.facts.append(tr)
@@ -283,26 +312,115 @@ class Engine:
             self.add_rule(rule)
         return True
 
+    def _has_numeric_literal(self, term: Term) -> bool:
+        if isinstance(term, Literal):
+            return numeric_value(term) is not None
+        if isinstance(term, ListTerm):
+            return any(self._has_numeric_literal(item) for item in term.elems)
+        if isinstance(term, GraphTerm):
+            return any(
+                self._has_numeric_literal(item)
+                for triple in term.triples
+                for item in (triple.s, triple.p, triple.o)
+            )
+        return False
+
+    def _fact_terms_equal(self, left: Term, right: Term) -> bool:
+        if left == right:
+            return True
+        if isinstance(left, Literal) and isinstance(right, Literal):
+            left_number = numeric_value(left)
+            right_number = numeric_value(right)
+            return (
+                left_number is not None
+                and right_number is not None
+                and literal_datatype(left) == literal_datatype(right)
+                and not left_number.is_nan()
+                and not right_number.is_nan()
+                and left_number == right_number
+            )
+        if isinstance(left, ListTerm) and isinstance(right, ListTerm):
+            return len(left.elems) == len(right.elems) and all(
+                self._fact_terms_equal(a, b) for a, b in zip(left.elems, right.elems)
+            )
+        return False
+
     def _rule_from_fact(self, tr: Triple) -> Rule | None:
         if not isinstance(tr.p, Iri):
             return None
+        blank_vars: dict[str, Var] = {}
+
+        def antecedent_term(term: Term) -> Term:
+            if isinstance(term, Blank):
+                return blank_vars.setdefault(term.label, Var(f"_blank_{term.label}"))
+            if isinstance(term, ListTerm):
+                return ListTerm(antecedent_term(item) for item in term.elems)
+            if isinstance(term, OpenListTerm):
+                return OpenListTerm((antecedent_term(item) for item in term.prefix), term.tail_var)
+            if isinstance(term, GraphTerm):
+                return GraphTerm(
+                    Triple(antecedent_term(item.s), antecedent_term(item.p), antecedent_term(item.o))
+                    for item in term.triples
+                )
+            return term
+
+        def antecedent(triples: Iterable[Triple]) -> tuple[Triple, ...]:
+            return tuple(
+                Triple(antecedent_term(item.s), antecedent_term(item.p), antecedent_term(item.o))
+                for item in triples
+            )
+
         if tr.p.value == LOG_IMPLIES:
             if isinstance(tr.s, GraphTerm) and isinstance(tr.o, GraphTerm):
-                return Rule(tr.s.triples, tr.o.triples, True)
+                return Rule(antecedent(tr.s.triples), tr.o.triples, True)
             if isinstance(tr.s, GraphTerm) and isinstance(tr.o, Literal):
                 value = bool_value(tr.o)
                 if value is False:
-                    return Rule(tr.s.triples, (), True, True)
+                    return Rule(antecedent(tr.s.triples), (), True, True)
                 if value is True:
-                    return Rule(tr.s.triples, (), True)
+                    return Rule(antecedent(tr.s.triples), (), True)
             if isinstance(tr.s, Literal) and bool_value(tr.s) is True and isinstance(tr.o, GraphTerm):
                 return Rule((), tr.o.triples, True)
         if tr.p.value == LOG_IMPLIED_BY and isinstance(tr.s, GraphTerm):
             if isinstance(tr.o, GraphTerm):
-                return Rule(tr.s.triples, tr.o.triples, False)
+                return Rule(antecedent(tr.s.triples), tr.o.triples, False)
             if isinstance(tr.o, Literal) and bool_value(tr.o) is True:
                 return Rule(tr.s.triples, (), False)
         return None
+
+    def _rule_as_fact(self, rule: Rule) -> Triple:
+        """Expose a live rule to meta-rules without materializing it as output."""
+        if rule.is_forward:
+            subject: Term = GraphTerm(rule.premise) if rule.premise else Literal("true", XSD_NS + "boolean", bare=True)
+            if rule.is_fuse:
+                obj: Term = Literal("false", XSD_NS + "boolean", bare=True)
+            elif rule.dynamic_conclusion is not None:
+                obj = rule.dynamic_conclusion
+            else:
+                obj = GraphTerm(rule.conclusion)
+            return Triple(subject, Iri(LOG_IMPLIES), obj)
+        subject = GraphTerm(rule.premise)
+        obj = GraphTerm(rule.conclusion) if rule.conclusion else Literal("true", XSD_NS + "boolean", bare=True)
+        return Triple(subject, Iri(LOG_IMPLIED_BY), obj)
+
+    def _candidate_rule_facts(self, goal: Triple) -> Iterator[Triple]:
+        if not self._rule_fact_view_active:
+            return
+        predicate = goal.p
+        if isinstance(predicate, Iri):
+            if predicate.value == LOG_IMPLIES:
+                rules: Iterable[Rule] = self.forward_rules
+            elif predicate.value == LOG_IMPLIED_BY:
+                rules = self.backward_rules
+            else:
+                return
+        elif isinstance(predicate, Var):
+            rules = (*self.forward_rules, *self.backward_rules)
+        else:
+            return
+        for rule in rules:
+            # Universal variables in the exposed rule have their own scope.
+            yield self._rule_as_fact(self.standardize_apart(rule))
 
     def add_rule(self, rule: Rule) -> bool:
         key = self._rule_key(rule)
@@ -313,6 +431,15 @@ class Engine:
             self.forward_rules.append(rule)
         else:
             self.backward_rules.append(rule)
+            if len(rule.premise) == 1 and isinstance(rule.premise[0].p, Iri):
+                self._backward_predicates.add(rule.premise[0].p.value)
+            if self._agenda_active:
+                # Forward rules indexed before this derived backward rule
+                # existed may now be provable without an extensional fact.
+                # Return them to the generic solver on the next iteration.
+                self._agenda_indexed_rules.clear()
+                self._agenda_active = False
+                self._agenda_queue.clear()
         return True
 
     def _term_contains_blank(self, term: Term) -> bool:
@@ -351,6 +478,10 @@ class Engine:
             return False
         goal = rule.premise[0]
         if not isinstance(goal.p, Iri):
+            return False
+        if goal.p.value in {LOG_IMPLIES, LOG_IMPLIED_BY}:
+            # Live rules are exposed through a virtual rule-as-data view that
+            # is consulted by the generic solver, not the extensional agenda.
             return False
         return get_builtin(goal.p.value) is None
 
@@ -416,6 +547,8 @@ class Engine:
         self._fired_rule_bindings.add(firing_key)
         changed = False
         for head in entry.rule.conclusion:
+            if not self._head_template_is_bound(head, subst):
+                continue
             out = self.apply_subst_triple(head, subst, ground_blanks=False)
             if self.add_fact(out, inferred=True):
                 changed = True
@@ -434,6 +567,98 @@ class Engine:
         del self._agenda_queue[:index]
         return changed
 
+    def _rule_uses_scoped_builtin(self, rule: Rule) -> bool:
+        scoped = {
+            LOG_NS + "collectAllIn",
+            LOG_NS + "forAllIn",
+            LOG_NS + "includes",
+            LOG_NS + "notIncludes",
+        }
+        return any(isinstance(goal.p, Iri) and goal.p.value in scoped for goal in rule.premise)
+
+    def _rule_uses_aggregate_builtin(self, rule: Rule) -> bool:
+        return any(
+            isinstance(goal.p, Iri) and goal.p.value == LOG_NS + "collectAllIn"
+            for goal in rule.premise
+        )
+
+    def _rule_input_signature(self, rule: Rule) -> tuple:
+        self._ensure_fact_indexes_current()
+        dependencies: set[Iri] = set()
+        pending: list[Iri] = []
+        broad = self._rule_uses_scoped_builtin(rule)
+
+        def add_goal(goal: Triple) -> None:
+            nonlocal broad
+            if isinstance(goal.p, Var):
+                broad = True
+            elif isinstance(goal.p, Iri) and get_builtin(goal.p.value) is None and goal.p not in dependencies:
+                dependencies.add(goal.p)
+                pending.append(goal.p)
+
+        for goal in rule.premise:
+            add_goal(goal)
+        seen_backward: set[str] = set()
+        while pending:
+            predicate = pending.pop()
+            if predicate.value in seen_backward:
+                continue
+            seen_backward.add(predicate.value)
+            for backward in self.backward_rules:
+                if (
+                    len(backward.premise) == 1
+                    and isinstance(backward.premise[0].p, Iri)
+                    and backward.premise[0].p.value == predicate.value
+                ):
+                    for body_goal in backward.conclusion:
+                        add_goal(body_goal)
+
+        counts = tuple(
+            (predicate.value, len(self._facts_by_pred.get(predicate, ())))
+            for predicate in sorted(dependencies, key=lambda item: item.value)
+        )
+        return (
+            len(self.facts) if broad else None,
+            len(self.forward_rules),
+            len(self.backward_rules),
+            counts,
+        )
+
+    def _evaluate_forward_rules(self, rules: Iterable[Rule]) -> bool:
+        changed = False
+        for rule in rules:
+            if rule.is_fuse:
+                continue
+            input_signature = self._rule_input_signature(rule)
+            if self._rule_input_signatures.get(rule) == input_signature:
+                continue
+            self._rule_input_signatures[rule] = input_signature
+            for subst in list(self.solve(list(rule.premise), {})):
+                firing_key = self._firing_key(rule, subst)
+                if firing_key in self._fired_rule_bindings:
+                    continue
+                self._fired_rule_bindings.add(firing_key)
+                heads = list(rule.conclusion)
+                if rule.dynamic_conclusion is not None:
+                    dynamic = self.apply_subst(rule.dynamic_conclusion, subst)
+                    if isinstance(dynamic, GraphTerm):
+                        heads.extend(dynamic.triples)
+                    elif isinstance(dynamic, Literal) and bool_value(dynamic) is False:
+                        raise InferenceFuseError()
+                blank_mapping: dict[str, Blank] = {}
+                for head in heads:
+                    if not self._head_template_is_bound(head, subst):
+                        continue
+                    fact = self.apply_subst_triple(
+                        head,
+                        subst,
+                        ground_blanks=True,
+                        blank_mapping=blank_mapping,
+                    )
+                    if self.add_fact(fact, inferred=True):
+                        changed = True
+        return changed
+
     def run(self) -> ReasonStreamResult:
         # Top-level log:implies facts are live rules immediately.
         for tr in list(self.facts):
@@ -448,35 +673,28 @@ class Engine:
 
         # Validate immediate sameAs reflexivity facts are usable. No full OWL closure is intended.
         for iteration in range(self.max_iterations):
-            changed = False
             # Rules not covered by the agenda still use the complete solver. This
             # preserves general N3 behavior while avoiding O(rules * facts * depth)
             # scans for the common single-premise Horn-chain case.
             rules_snapshot = [r for r in self.forward_rules if r not in self._agenda_indexed_rules]
-            for rule in rules_snapshot:
-                if rule.is_fuse:
-                    continue
-                # Prove against a stable fact snapshot before materializing
-                # any heads. Besides matching Eyeling, this keeps predicate
-                # memo tables reusable across all solutions of one rule.
-                for subst in list(self.solve(list(rule.premise), {})):
-                    firing_key = self._firing_key(rule, subst)
-                    if firing_key in self._fired_rule_bindings:
-                        continue
-                    self._fired_rule_bindings.add(firing_key)
-                    heads = list(rule.conclusion)
-                    if rule.dynamic_conclusion is not None:
-                        dynamic = self.apply_subst(rule.dynamic_conclusion, subst)
-                        if isinstance(dynamic, GraphTerm):
-                            heads.extend(dynamic.triples)
-                        elif isinstance(dynamic, Literal) and bool_value(dynamic) is False:
-                            raise InferenceFuseError()
-                    for head in heads:
-                        fact = self.apply_subst_triple(head, subst, ground_blanks=True)
-                        if self.add_fact(fact, inferred=True):
-                            changed = True
+            ordinary_rules = [rule for rule in rules_snapshot if not self._rule_uses_scoped_builtin(rule)]
+            lower_scoped_rules = [
+                rule
+                for rule in rules_snapshot
+                if self._rule_uses_scoped_builtin(rule) and not self._rule_uses_aggregate_builtin(rule)
+            ]
+            aggregate_rules = [rule for rule in rules_snapshot if self._rule_uses_aggregate_builtin(rule)]
+            changed = self._evaluate_forward_rules(ordinary_rules)
             if self._agenda_active and self._agenda_queue:
                 changed = self._drain_single_premise_agenda() or changed
+            if not changed:
+                changed = self._evaluate_forward_rules(lower_scoped_rules)
+                if self._agenda_active and self._agenda_queue:
+                    changed = self._drain_single_premise_agenda() or changed
+            if not changed:
+                changed = self._evaluate_forward_rules(aggregate_rules)
+                if self._agenda_active and self._agenda_queue:
+                    changed = self._drain_single_premise_agenda() or changed
             if not changed:
                 break
         else:
@@ -494,8 +712,16 @@ class Engine:
             seen: set[Triple] = set()
             for qr in self.query_rules:
                 for subst in self.solve(list(qr.premise), {}):
+                    blank_mapping: dict[str, Blank] = {}
                     for head in qr.conclusion:
-                        tr = self.apply_subst_triple(head, subst, ground_blanks=True)
+                        if not self._head_template_is_bound(head, subst):
+                            continue
+                        tr = self.apply_subst_triple(
+                            head,
+                            subst,
+                            ground_blanks=True,
+                            blank_mapping=blank_mapping,
+                        )
                         if tr not in seen:
                             seen.add(tr)
                             query_derived.append(tr)
@@ -550,6 +776,44 @@ class Engine:
                 for tr in term.triples
             )
         return False
+
+    def _term_contains_unbound_var(self, term: Term) -> bool:
+        if isinstance(term, Var):
+            return True
+        if isinstance(term, ListTerm):
+            return any(self._term_contains_unbound_var(item) for item in term.elems)
+        if isinstance(term, OpenListTerm):
+            return True
+        if isinstance(term, GraphTerm):
+            return any(
+                self._term_contains_unbound_var(item.s)
+                or self._term_contains_unbound_var(item.p)
+                or self._term_contains_unbound_var(item.o)
+                for item in term.triples
+            )
+        return False
+
+    def _triple_contains_unbound_var(self, triple: Triple) -> bool:
+        return (
+            self._term_contains_unbound_var(triple.s)
+            or self._term_contains_unbound_var(triple.p)
+            or self._term_contains_unbound_var(triple.o)
+        )
+
+    def _head_template_is_bound(self, triple: Triple, subst: Subst) -> bool:
+        def bound(term: Term) -> bool:
+            if isinstance(term, Var):
+                return not isinstance(self.apply_subst(term, subst), Var)
+            if isinstance(term, ListTerm):
+                return all(bound(item) for item in term.elems)
+            if isinstance(term, OpenListTerm):
+                return False
+            if isinstance(term, GraphTerm):
+                # Variables inside a quoted formula have formula-local scope.
+                return True
+            return True
+
+        return bound(triple.s) and bound(triple.p) and bound(triple.o)
 
     def _can_memoize_answer_term(self, term: Term) -> bool:
         if isinstance(term, (Var, OpenListTerm)):
@@ -766,13 +1030,16 @@ class Engine:
 
             def canonicalize(value: Any) -> Any:
                 if isinstance(value, dict):
-                    if value.get("_type") in {"Var", "Blank"}:
-                        return {"_type": value["_type"], "name": "*"}
+                    if value.get("_type") == "Var":
+                        return {"_type": "Var", "name": "*"}
                     return {key: canonicalize(item) for key, item in value.items()}
                 if isinstance(value, list):
                     return [canonicalize(item) for item in value]
                 return value
 
+            # Standardized rule variables change names at every recursive
+            # call, so normalize variables for cycle detection. Blank nodes
+            # remain identity-bearing terms and must not be collapsed.
             return json.dumps(canonicalize(primitive), sort_keys=True, default=str)
 
         while stack:
@@ -872,6 +1139,10 @@ class Engine:
                 nxt = self.unify_triple(first, fact, subst_now)
                 if nxt is not None:
                     successors.append((rest, nxt, depth_now + 1, reorder_now, visited))
+            for rule_fact in self._candidate_rule_facts(first):
+                nxt = self.unify_triple(first, rule_fact, subst_now)
+                if nxt is not None:
+                    successors.append((rest, nxt, depth_now + 1, reorder_now, visited))
 
             # On re-entering an ancestor goal, reject only rules whose body
             # immediately re-enters that ancestor chain. This is Eyeling's
@@ -905,7 +1176,13 @@ class Engine:
         pred = self.deref(goal.p, subst)
 
         def unbound(term: Term) -> int:
+            original = term
             term = self.deref(term, subst)
+            if isinstance(original, Var) and isinstance(term, GraphTerm):
+                # Variables inside a formula bound to an outer variable have
+                # formula-local scope. They do not make the builtin's input
+                # unbound and must not delay log:conclusion/includes.
+                return 0
             if isinstance(term, Var):
                 return 1
             if isinstance(term, ListTerm):
@@ -915,20 +1192,53 @@ class Engine:
             return 0
 
         variables = unbound(goal.s) + unbound(goal.o)
-        if not isinstance(pred, Iri) or get_builtin(pred.value) is None:
+        if not isinstance(pred, Iri):
+            return (0, variables)
+        if get_builtin(pred.value) is None:
+            self._ensure_fact_indexes_current()
+            has_extensional_candidate = bool(self._facts_by_pred.get(pred))
+            has_backward_rule = pred.value in self._backward_predicates
+            if has_backward_rule and not has_extensional_candidate and unbound(goal.s):
+                # Backward relations conventionally consume their subject and
+                # construct/test their object. Do not invoke a backward-only
+                # relation before preceding facts have supplied that input.
+                return (1, variables)
             return (0, variables)
         if pred.value == "http://www.w3.org/2000/10/swap/list#iterate" and unbound(goal.s) == 0:
+            return (-1, variables)
+        if (
+            pred.value in {
+                "http://www.w3.org/2000/10/swap/list#append",
+                "http://www.w3.org/2000/10/swap/list#firstRest",
+            }
+            and unbound(goal.o) == 0
+        ):
             return (-1, variables)
         comparisons = {
             "equalTo", "notEqualTo", "greaterThan", "lessThan",
             "notGreaterThan", "notLessThan", "contains", "startsWith",
-            "endsWith", "matches", "notMatches",
+            "endsWith", "matches", "notMatches", "notMember",
         }
         local = pred.value.rsplit("#", 1)[-1]
         if local in {"collectAllIn", "forAllIn"}:
+            # Aggregates often bind a list used by a following builtin. Rank
+            # them after extensional facts and constructive backward goals,
+            # but before consumers whose subject is still unbound.
+            return (1, variables)
+        if local in {"includes", "notIncludes"} and isinstance(self.deref(goal.o, subst), Var):
+            # A variable object denotes a formula pattern supplied by another
+            # goal; includes cannot enumerate an unconstrained formula.
             return (3, variables)
         if local in {"includes", "notIncludes"} and variables:
             return (1, variables)
+        if pred.value == LOG_NS + "equalTo":
+            left = self.deref(goal.s, subst)
+            right = self.deref(goal.o, subst)
+            if not (isinstance(left, Var) and isinstance(right, Var)):
+                # log:equalTo is structural unification. A partially bound
+                # list or formula can construct the other side even though it
+                # still contains variables of its own.
+                return (-1, variables)
         if local in comparisons and variables:
             return (2, variables)
         # Most N3 builtins consume their subject and bind/test their object.
@@ -936,7 +1246,7 @@ class Engine:
         # depend on their output.
         if unbound(goal.s) == 0:
             return (-1, variables)
-        return (1, variables)
+        return (2, variables)
 
     def deref(self, t: Term, subst: Subst) -> Term:
         seen: set[str] = set()
@@ -963,18 +1273,29 @@ class Engine:
             return GraphTerm(self.apply_subst_triple(tr, subst) for tr in t.triples)
         return t
 
-    def apply_subst_triple(self, tr: Triple, subst: Subst, ground_blanks: bool = False) -> Triple:
+    def apply_subst_triple(
+        self,
+        tr: Triple,
+        subst: Subst,
+        ground_blanks: bool = False,
+        blank_mapping: dict[str, Blank] | None = None,
+    ) -> Triple:
         if ground_blanks:
-            return self._instantiate_head_triple(tr, subst)
+            return self._instantiate_head_triple(tr, subst, blank_mapping)
         return Triple(self.apply_subst(tr.s, subst), self.apply_subst(tr.p, subst), self.apply_subst(tr.o, subst))
 
-    def _instantiate_head_triple(self, tr: Triple, subst: Subst) -> Triple:
+    def _instantiate_head_triple(
+        self,
+        tr: Triple,
+        subst: Subst,
+        mapping: dict[str, Blank] | None = None,
+    ) -> Triple:
         """Apply a substitution while skolemizing only existential blank nodes
         that are written in the rule head itself. Blank nodes reached through a
         variable binding are preserved; otherwise rules over blank-node facts
         would keep producing fresh duplicates forever.
         """
-        mapping: dict[str, Blank] = {}
+        mapping = mapping if mapping is not None else {}
 
         def convert(original: Term) -> Term:
             if isinstance(original, Var):
@@ -1115,6 +1436,22 @@ class Engine:
                 if a_num.is_nan() or b_num.is_nan():
                     return a.lexical == b.lexical
                 return a_num == b_num
+            if a_dt in {XSD_NS + "date", XSD_NS + "dateTime"}:
+                import datetime
+
+                def temporal_value(literal: Literal) -> datetime.date | datetime.datetime | None:
+                    try:
+                        lexical = literal.lexical
+                        if a_dt == XSD_NS + "dateTime":
+                            return datetime.datetime.fromisoformat(lexical.replace("Z", "+00:00"))
+                        return datetime.date.fromisoformat(lexical)
+                    except ValueError:
+                        return None
+
+                a_temporal = temporal_value(a)
+                b_temporal = temporal_value(b)
+                if a_temporal is not None and b_temporal is not None:
+                    return a_temporal == b_temporal
         return a.lexical == b.lexical and a_dt == b_dt and (a.lang or "").lower() == (b.lang or "").lower()
 
     def terms_equivalent(self, a: Term, b: Term, subst: Subst) -> bool:

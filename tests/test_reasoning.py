@@ -110,6 +110,31 @@ def test_existential_rule_head_fires_once_per_binding():
     assert len(result.derived) < 10
 
 
+def test_existential_blank_is_shared_across_one_rule_head():
+    out = reason('''
+@prefix : <http://example.org/> .
+:source :value 1.
+{ :source :value ?value. } => {
+  :result :node _:node.
+  _:node :left ?value; :right ?value.
+}.
+{ :result :node ?node. ?node :left 1; :right 1. }
+=> { :result :joined true. }.
+''')
+    assert ":result :joined true ." in out
+
+
+def test_unbound_rule_head_variables_are_not_materialized():
+    out = reason('''
+@prefix : <http://example.org/> .
+:source :value 1.
+{ :source :value ?bound. }
+=> { :result :bound ?bound; :unbound ?missing. }.
+''')
+    assert ":result :bound 1 ." in out
+    assert ":unbound" not in out
+
+
 def test_dynamic_inference_fuse_is_enforced():
     with pytest.raises(InferenceFuseError):
         reason('''
@@ -129,6 +154,74 @@ def test_static_fuse_is_evaluated_after_forward_closure():
     assert ":result :ok true ." in out
 
 
+def test_rules_are_matchable_as_log_implies_facts():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+{ :source :p :value. } => { :target :p :value. }.
+{ ?premise log:implies ?conclusion. } => { :result :containsRule true. }.
+''')
+    assert ":result :containsRule true ." in out
+
+
+def test_explicit_formula_includes_does_not_see_ambient_live_rules():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+:scope :formula { :inside :value true. }.
+{ :outside :source true. } => { :outside :target true. }.
+{
+  :scope :formula ?scope.
+  ?scope log:notIncludes { ?body log:implies ?head. }.
+} => { :result :closed true. }.
+''')
+    assert ":result :closed true ." in out
+
+
+def test_meta_fuse_can_match_an_existing_fuse_rule():
+    with pytest.raises(InferenceFuseError):
+        reason('''
+@prefix : <http://example.org/> .
+{ :Alice a :Liar. } => false.
+{ { :Alice a :Liar. } => false. } => false.
+''')
+
+
+def test_log_conclusion_can_feed_log_includes_with_scoped_rule_variables():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+:knowledge :formula {
+  :alice :parent :bob.
+  { ?x :parent ?y. } => { ?y :child ?x. }.
+}.
+{
+  :knowledge :formula ?formula.
+  ?formula log:conclusion ?closure.
+  ?closure log:includes { :bob :child :alice. }.
+} => { :result :ok true. }.
+''')
+    assert ":result :ok true ." in out
+
+
+def test_log_conclusion_treats_quoted_antecedent_blanks_as_variables():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+:theory :is {
+  :policy :permission [ :user :alice; :asset :ledger ].
+  { :policy :permission [ :user ?user; :asset ?asset ]. }
+  => { ?user :canAccess ?asset. }.
+}.
+{
+  :theory :is ?theory.
+  ?theory log:conclusion ?closure.
+  ?closure log:includes { :alice :canAccess :ledger. }.
+} => { :result :ok true. }.
+''')
+    assert ":result :ok true ." in out
+
+
 def test_mutually_recursive_backward_rules_reach_fact_base_case():
     out = reason('''
 @prefix : <http://example.org/> .
@@ -138,6 +231,236 @@ def test_mutually_recursive_backward_rules_reach_fact_base_case():
 { :Pillar :to ?what. } => { :result :is ?what. }.
 ''')
     assert ":result :is :Post ." in out
+
+
+def test_large_integer_exponentiation_and_remainder_are_exact():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix math: <http://www.w3.org/2000/10/swap/math#> .
+{
+  (2 10000) math:exponentiation ?power.
+  (?power 1000000) math:remainder ?remainder.
+} => { :result :is ?remainder. }.
+''')
+    assert ":result :is 709376 ." in out
+
+
+def test_exponentiation_can_solve_for_the_exponent():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix math: <http://www.w3.org/2000/10/swap/math#> .
+{ (7 ?exponent) math:exponentiation 49. }
+=> { :result :is ?exponent. }.
+''')
+    assert ":result :is 2 ." in out
+
+
+def test_high_precision_cancellation_does_not_break_square_root_branch():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix math: <http://www.w3.org/2000/10/swap/math#> .
+{
+  (-1.3333333333333333333333333333333333333333333333333333333333333333333333333333333
+   1.3333333333333333333333333333333333333333333333333333333333333333333333333333332)
+    math:sum ?nearZero.
+  (?nearZero 0.5) math:exponentiation ?root.
+} => { :result :root ?root. }.
+''')
+    assert ":result :root 0 ." in out
+
+
+def test_string_format_preserves_numeric_argument_types():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix string: <http://www.w3.org/2000/10/swap/string#> .
+{ ("%05d" 42) string:format ?integer.
+  ("%5.1f" 12.0) string:format ?decimal. }
+=> { :result :integer ?integer; :decimal ?decimal. }.
+''')
+    assert ':result :integer "00042"' in out
+    assert ':decimal " 12.0"' in out
+
+
+def test_math_comparison_supports_list_boolean_and_durations():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix math: <http://www.w3.org/2000/10/swap/math#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+{
+  (3 2) math:greaterThan true.
+  ("2026-01-01"^^xsd:date "1944-08-21"^^xsd:date) math:difference ?age.
+  ?age math:greaterThan "P80Y"^^xsd:duration.
+} => { :result :ok true. }.
+''')
+    assert ":result :ok true ." in out
+
+
+def test_datetime_arithmetic_supports_duration_addition_and_subtraction():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix math: <http://www.w3.org/2000/10/swap/math#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+{
+  ("2026-02-18T10:00:00Z"^^xsd:dateTime "PT2H"^^xsd:duration) math:sum ?end.
+  (?end "PT2H"^^xsd:duration) math:difference ?start.
+} => { :result :end ?end; :start ?start. }.
+''')
+    assert '"2026-02-18T12:00:00+00:00"^^xsd:dateTime' in out
+    assert '"2026-02-18T10:00:00+00:00"^^xsd:dateTime' in out
+
+
+def test_datetime_literals_compare_by_value_across_timezone_lexical_forms():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+:source :at "2025-04-03T00:00:00+00:00"^^xsd:dateTime.
+{ :source :at "2025-04-03T00:00:00.000Z"^^xsd:dateTime. }
+=> { :result :ok true. }.
+''')
+    assert ":result :ok true ." in out
+
+
+def test_log_dtlit_decomposes_into_a_partially_bound_pair():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+:source :value "abc"^^xsd:integer.
+{
+  :source :value ?literal.
+  (?lexical xsd:integer) log:dtlit ?literal.
+} => { :result :lexical ?lexical. }.
+''')
+    assert ':result :lexical "abc"' in out
+
+
+def test_log_equal_to_binds_an_unbound_side():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+{ 1 log:equalTo ?value. } => { :result :is ?value. }.
+''')
+    assert ":result :is 1 ." in out
+
+
+def test_collect_all_in_preserves_duplicate_projected_values():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+@prefix math: <http://www.w3.org/2000/10/swap/math#> .
+:alice :has :one, :two, :three.
+{
+  (1 { :alice :has ?item. } ?ones) log:collectAllIn ?scope.
+  ?ones math:sum ?count.
+} => { :result :count ?count. }.
+''')
+    assert ":result :count 3 ." in out
+
+
+def test_collect_all_in_preserves_bound_blank_identity_inside_lists():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix list: <http://www.w3.org/2000/10/swap/list#> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+@prefix math: <http://www.w3.org/2000/10/swap/math#> .
+:source :items ([ :value 1 ] [ :value 1 ]).
+{
+  :source :items ?items.
+  (1 { ?items list:member ?item. ?item :value 1. } ?ones)
+    log:collectAllIn _:scope.
+  ?ones math:sum ?count.
+} => { :result :count ?count. }.
+''')
+    assert ":result :count 2 ." in out
+
+
+def test_collect_all_in_uses_an_explicit_formula_scope():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+:ambient :value 99.
+:source :graph { :inside :value 1. :other :value 2. }.
+{
+  :source :graph ?scope.
+  (?value { ?subject :value ?value. } ?values) log:collectAllIn ?scope.
+} => { :result :values ?values. }.
+''')
+    assert ":result :values (1 2) ." in out
+
+
+def test_list_map_flattens_all_predicate_solutions():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix list: <http://www.w3.org/2000/10/swap/list#> .
+:one :value :a.
+:two :value :b, :c.
+{ ((:one :two :missing) :value) list:map ?values. }
+=> { :result :values ?values. }.
+''')
+    assert ":result :values (:a :b :c) ." in out
+
+
+def test_list_append_enumerates_splits_when_the_result_is_bound():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix list: <http://www.w3.org/2000/10/swap/list#> .
+{ (?left ?right) list:append (1 2). }
+=> { :result :split (?left ?right). }.
+''')
+    assert ":result :split (() (1 2)) ." in out
+    assert ":result :split ((1) (2)) ." in out
+    assert ":result :split ((1 2) ()) ." in out
+
+
+def test_list_sort_orders_nested_lists_by_numeric_values():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix list: <http://www.w3.org/2000/10/swap/list#> .
+{ ((10 :a) (4 :b) (2 :c)) list:sort ?sorted. }
+=> { :result :sorted ?sorted. }.
+''')
+    assert ":result :sorted ((2 :c) (4 :b) (10 :a)) ." in out
+
+
+def test_rdf_first_and_rest_enumerate_embedded_list_terms():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+:source :value (1 2).
+{ ?list rdf:first 1; rdf:rest (2). }
+=> { :result :list ?list. }.
+''')
+    assert ":result :list (1 2) ." in out
+
+
+def test_derived_backward_rule_rechecks_forward_rules():
+    out = reason('''
+@prefix : <http://example.org/> .
+:parentOf :inverse :childOf.
+:alice :parentOf :bob.
+{ ?forward :inverse ?backward. } => {
+  { ?child ?backward ?parent. } <= { ?parent ?forward ?child. }.
+}.
+{ ?child :childOf ?parent. } => { ?child :hasParent ?parent. }.
+''')
+    assert ":bob :hasParent :alice ." in out
+
+
+def test_backward_only_goal_waits_for_its_subject_input():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix math: <http://www.w3.org/2000/10/swap/math#> .
+:counter :current 0; :limit 2.
+{ (?n ?limit) :successor ?next. } <= {
+  ?n math:lessThan ?limit.
+  (?n 1) math:sum ?next.
+}.
+{
+  :counter :current ?n; :limit ?limit.
+  (?n ?limit) :successor ?next.
+} => { :result :next ?next. }.
+''')
+    assert ":result :next 1 ." in out
 
 
 def test_forbidden_unicode_escape_is_rejected():
@@ -558,3 +881,36 @@ def test_log_memoize_predicate_used_inside_notincludes_check():
 """)
     assert ":bob :isMinor true ." in out
     assert ":alice :isMinor true ." not in out
+
+
+def test_derived_decimal_facts_are_deduplicated_by_value():
+    result = reason_stream("""
+@prefix : <http://example.org/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+:left :amount "1200"^^xsd:decimal .
+:right :amount "1200.00"^^xsd:decimal .
+{ :left :amount ?amount } => { :result :amount ?amount } .
+{ :right :amount ?amount } => { :result :amount ?amount } .
+""")
+    assert len(result.derived) == 1
+
+
+def test_collect_all_waits_for_lower_scoped_rules():
+    result = reason_stream("""
+@prefix : <http://example.org/> .
+@prefix list: <http://www.w3.org/2000/10/swap/list#> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+:a :item true . :b :item true .
+{
+  (?item { ?item :selected true } ?items) log:collectAllIn _:scope .
+  ?items list:length ?count .
+} => { :result :count ?count } .
+{ ?item :item true . _:scope log:notIncludes { ?item :blocked true } }
+=> { ?item :selected true } .
+""")
+    counts = [
+        triple.o.lexical
+        for triple in result.derived
+        if isinstance(triple.p, Iri) and triple.p.value == "http://example.org/count"
+    ]
+    assert counts == ["2"]

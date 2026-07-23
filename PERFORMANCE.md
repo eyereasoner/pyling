@@ -15,10 +15,10 @@ The shared example benchmarks were rerun locally on 2026-07-23.
 
 - Eyeling's own runner passed all 224 runnable examples against their golden
   outputs.
-- In the current compatibility survey, pyling returned normally on 223 of 224
-  examples. The only nonzero exit was the intentional `fuse.n3` assertion.
-- Pyling and Eyeling both returned normally on 222 examples and reported
-  matching derived-fact counts on 157 of them, up from 142 before this work.
+- Pyling and Eyeling each returned normally on 222 of 224 examples. Both
+  nonzero outcomes are the intentional `fuse.n3` and `liar.n3` assertions.
+- The engines reported matching derived-fact counts on 220 of the 222 jointly
+  normal examples.
 - All 20 pyling syntax errors recorded by the earlier survey have been
   eliminated. Nine were still reproducible before the fixes described below;
   the other 11 had already been fixed by RDF/TriG compatibility work.
@@ -36,8 +36,10 @@ Therefore, the answer to "did the test run successfully?" is:
   execution and the reported output counts agree.
 - **Yes for execution of the complete Eyeling example corpus:** every example
   either returns normally or produces its intentional inference-fuse exit.
-  Exact derived-count parity currently holds for 157 of the 222 jointly normal
-  cases; the other 65 remain broader semantic-parity work.
+  Exact derived-count parity holds for 220 of the 222 jointly normal cases.
+  The two explained exceptions are the excluded JavaScript Sudoku adapter and
+  a built-in smoke test where pyling derives more results; see
+  [SEMANTIC_PARITY.md](SEMANTIC_PARITY.md).
 - **No for a like-for-like FuXi comparison on those examples:** FuXi either did
   different work or rejected the input.
 - **Yes for process completion on the recorded MobiBench run, but not proven
@@ -63,19 +65,18 @@ All 224 examples passed in 25.70 seconds. That is the semantic baseline and
 includes the expected inference-fuse exits from `fuse.n3` and `liar.n3`.
 
 After the compatibility fixes, pyling was rerun with one measured iteration,
-no warmup, and a 25-second timeout. Eyeling's counts come from the same-date
+no warmup, and a 35-second timeout. Eyeling's counts come from the same-date
 full survey described below. The FuXi row is retained from the earlier
 three-reasoner survey:
 
 | Reasoner | Normal returns | Other outcomes | Cases reporting derived facts |
 |---|---:|---|---:|
 | Eyeling | 222 | 2 expected inference-fuse exits | 209 |
-| pyling | 223 | 1 expected inference-fuse exit | 187 |
+| pyling | 222 | 2 expected inference-fuse exits | 209 |
 | FuXi | 165 | 35 loader errors, 22 syntax errors, 2 timeouts | 0 |
 
-`fuse.n3` is the sole pyling nonzero exit and is intentional. Pyling still
-returns normally for `liar.n3`, where Eyeling expects a fuse, so process
-completion alone should not be read as a passed golden-output test.
+Both `fuse.n3` and the nested-rule `liar.n3` case now produce the intentional
+inference-fuse outcome in pyling and Eyeling.
 
 FuXi reported zero derived facts in every normally returning case. Its timings
 do not represent the same work as Eyeling and pyling, so there is no valid
@@ -85,7 +86,7 @@ The earlier survey identified 142 cases with matching fact and derived-fact
 counts. After excluding `queens.n3`, which uses an Eyeling-only JavaScript
 built-in but happens to have matching top-level counts, 141 cases formed the
 historical timing cohort below. The current implementation increases exact
-derived-count parity to 157 cases, but those cases were not rerun as a
+derived-count parity to 220 cases, but those cases were not rerun as a
 multi-iteration timing cohort, so the older timing statistics are retained:
 
 | Comparison over 141 cases | Result |
@@ -114,8 +115,7 @@ examples favor Eyeling:
 | Path discovery | 12,972.20 ms | 868.14 ms | Eyeling, 14.94x |
 
 Matching counts are weaker than comparing normalized complete output. These
-141 rows are useful performance evidence, not a claim that pyling passed 141
-of Eyeling's golden tests.
+141 rows remain useful historical performance evidence.
 
 ### Previously unsupported cases
 
@@ -145,8 +145,9 @@ The follow-up work also removed the remaining execution and semantic gaps:
 | `collatz-1000` | Adding each result invalidated memoized suffixes during the same proof | Prove each rule against a stable fact snapshot | 1,000 trajectories, matching Eyeling |
 | `kaprekar-6174`, `takeuchi`, `deep-taxonomy-100000` | Recursive traversal and broad literal lookups exceeded the old timeout | Iterative DFS, answer projection, and normalized literal indexes | Normal exits |
 
-With a 25-second per-case budget, no unsupported or timed-out pyling example
-remains. The one non-normal outcome is the expected `fuse.n3` exit.
+With a 35-second per-case budget, no unsupported or timed-out pyling example
+remains. The two non-normal outcomes are the expected `fuse.n3` and `liar.n3`
+exits.
 
 ## pyling versus Eyeling
 

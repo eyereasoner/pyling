@@ -108,10 +108,38 @@ def _term_num(t: Term) -> Decimal | None:
 def _term_int(t: Term) -> int | None:
     if isinstance(t, Literal) and literal_datatype(t) == XSD_NS + "integer":
         try:
-            return int(t.lexical)
+            text = t.lexical
+            sign = -1 if text.startswith("-") else 1
+            if text[:1] in {"+", "-"}:
+                text = text[1:]
+            if not text or not text.isdigit():
+                return None
+            value = 0
+            for offset in range(0, len(text), 9):
+                chunk = text[offset : offset + 9]
+                value = value * (10 ** len(chunk)) + int(chunk)
+            return sign * value
         except ValueError:
             return None
     return None
+
+
+def _int_lexical(value: int) -> str:
+    """Render arbitrary-size integers without Python's int-to-string limit."""
+    if value == 0:
+        return "0"
+    sign = "-" if value < 0 else ""
+    value = abs(value)
+    chunks: list[int] = []
+    base = 1_000_000_000
+    while value:
+        value, chunk = divmod(value, base)
+        chunks.append(chunk)
+    return sign + str(chunks[-1]) + "".join(f"{chunk:09d}" for chunk in reversed(chunks[:-1]))
+
+
+def _int_lit(value: int) -> Literal:
+    return Literal(_int_lexical(value), XSD_NS + "integer", bare=True)
 
 
 def _term_str(t: Term) -> str | None:
@@ -119,6 +147,67 @@ def _term_str(t: Term) -> str | None:
         return t.lexical
     if isinstance(t, Iri):
         return t.value
+    return None
+
+
+def _datetime_value(term: Term):
+    if not isinstance(term, Literal):
+        return None
+    datatype = literal_datatype(term)
+    if datatype not in {XSD_NS + "date", XSD_NS + "dateTime", XSD_NS + "dateTimeStamp"}:
+        return None
+    import datetime as _dt
+
+    lexical = term.lexical
+    if datatype == XSD_NS + "date":
+        lexical += "T00:00:00+00:00"
+    elif lexical.endswith("Z"):
+        lexical = lexical[:-1] + "+00:00"
+    try:
+        value = _dt.datetime.fromisoformat(lexical)
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=_dt.timezone.utc)
+    return value
+
+
+def _duration_seconds(term: Term) -> Decimal | None:
+    if not isinstance(term, Literal) or literal_datatype(term) != XSD_NS + "duration":
+        return None
+    match = re.fullmatch(
+        r"(?P<sign>-)?P(?:(?P<years>[0-9.]+)Y)?(?:(?P<months>[0-9.]+)M)?"
+        r"(?:(?P<weeks>[0-9.]+)W)?(?:(?P<days>[0-9.]+)D)?"
+        r"(?:T(?:(?P<hours>[0-9.]+)H)?(?:(?P<minutes>[0-9.]+)M)?"
+        r"(?:(?P<seconds>[0-9.]+)S)?)?",
+        term.lexical,
+    )
+    if match is None:
+        return None
+    values = {
+        name: Decimal(match.group(name) or "0")
+        for name in ("years", "months", "weeks", "days", "hours", "minutes", "seconds")
+    }
+    days = (
+        values["years"] * Decimal("365.2425")
+        + values["months"] * Decimal("30.436875")
+        + values["weeks"] * 7
+        + values["days"]
+    )
+    total = days * 86400 + values["hours"] * 3600 + values["minutes"] * 60 + values["seconds"]
+    return -total if match.group("sign") else total
+
+
+def _comparable_num(term: Term) -> Decimal | None:
+    number = _term_num(term)
+    if number is not None:
+        return number
+    duration = _duration_seconds(term)
+    if duration is not None:
+        return duration
+    date = _datetime_value(term)
+    if date is not None:
+        return Decimal(str(date.timestamp()))
     return None
 
 
@@ -184,10 +273,43 @@ def _list_elems(ctx: BuiltinContext, t: Term) -> list[Term] | None:
     return ctx.engine.rdf_collection_to_list(t)  # type: ignore[attr-defined]
 
 
+def _known_list_terms(ctx: BuiltinContext) -> list[ListTerm]:
+    """Enumerate collection literals already present in the active fact set."""
+    found: list[ListTerm] = []
+    seen: set[ListTerm] = set()
+
+    def visit(term: Term) -> None:
+        if isinstance(term, ListTerm):
+            if term not in seen:
+                seen.add(term)
+                found.append(term)
+            for item in term.elems:
+                visit(item)
+        elif isinstance(term, OpenListTerm):
+            for item in term.prefix:
+                visit(item)
+        elif isinstance(term, GraphTerm):
+            for triple in term.triples:
+                visit(triple.s)
+                visit(triple.p)
+                visit(triple.o)
+
+    for triple in ctx.engine.facts:  # type: ignore[attr-defined]
+        visit(triple.s)
+        visit(triple.o)
+    return found
+
+
 def _math_cmp(op: Callable[[Decimal, Decimal], bool]) -> BuiltinHandler:
     def handler(ctx: BuiltinContext) -> list[Subst]:
-        a = _term_num(ctx.engine.apply_subst(ctx.goal.s, ctx.subst))  # type: ignore[attr-defined]
-        b = _term_num(ctx.engine.apply_subst(ctx.goal.o, ctx.subst))  # type: ignore[attr-defined]
+        subject = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
+        obj = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
+        if isinstance(subject, ListTerm) and len(subject.elems) == 2:
+            left, right = subject.elems
+        else:
+            left, right = subject, obj
+        a = _comparable_num(left)
+        b = _comparable_num(right)
         if a is None or b is None:
             return []
         return [ctx.subst] if op(a, b) else []
@@ -195,37 +317,26 @@ def _math_cmp(op: Callable[[Decimal, Decimal], bool]) -> BuiltinHandler:
 
 
 def _math_equal(ctx: BuiltinContext) -> list[Subst]:
-    a = _term_num(ctx.engine.apply_subst(ctx.goal.s, ctx.subst))  # type: ignore[attr-defined]
-    b = _term_num(ctx.engine.apply_subst(ctx.goal.o, ctx.subst))  # type: ignore[attr-defined]
+    subject = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
+    obj = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
+    left, right = subject.elems if isinstance(subject, ListTerm) and len(subject.elems) == 2 else (subject, obj)
+    a = _comparable_num(left)
+    b = _comparable_num(right)
     return [ctx.subst] if a is not None and b is not None and a == b else []
 
 
 def _math_not_equal(ctx: BuiltinContext) -> list[Subst]:
-    a = _term_num(ctx.engine.apply_subst(ctx.goal.s, ctx.subst))  # type: ignore[attr-defined]
-    b = _term_num(ctx.engine.apply_subst(ctx.goal.o, ctx.subst))  # type: ignore[attr-defined]
+    subject = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
+    obj = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
+    left, right = subject.elems if isinstance(subject, ListTerm) and len(subject.elems) == 2 else (subject, obj)
+    a = _comparable_num(left)
+    b = _comparable_num(right)
     return [ctx.subst] if a is not None and b is not None and a != b else []
 
 
 def _log_equal(ctx: BuiltinContext) -> list[Subst]:
-    a = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
-    b = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
-    if isinstance(a, Literal) and isinstance(b, Literal):
-        a_num = numeric_value(a)
-        b_num = numeric_value(b)
-        if a_num is not None and b_num is not None:
-            return [ctx.subst] if literal_datatype(a) == literal_datatype(b) and a_num == b_num else []
-    a_list = _list_elems(ctx, a)
-    b_list = _list_elems(ctx, b)
-    if a_list is not None and b_list is not None:
-        if len(a_list) != len(b_list):
-            return []
-        current = dict(ctx.subst)
-        for left, right in zip(a_list, b_list):
-            current = _unify_builtin_value(ctx, left, right, current)
-            if current is None:
-                return []
-        return [current]
-    return [ctx.subst] if ctx.engine.unify_term(a, b, {}) is not None else []  # type: ignore[attr-defined]
+    unified = ctx.unify_term(ctx.goal.s, ctx.goal.o, ctx.subst)
+    return [] if unified is None else [unified]
 
 
 def _log_not_equal(ctx: BuiltinContext) -> list[Subst]:
@@ -237,17 +348,34 @@ def _math_sum(ctx: BuiltinContext) -> list[Subst]:
     if elems is None:
         return []
     values = [ctx.engine.apply_subst(e, ctx.subst) for e in elems]  # type: ignore[attr-defined]
+    if len(values) == 2:
+        for date_term, duration_term in (values, reversed(values)):
+            date = _datetime_value(date_term)
+            seconds = _duration_seconds(duration_term)
+            if date is not None and seconds is not None and isinstance(date_term, Literal):
+                import datetime as _dt
+
+                result = date + _dt.timedelta(seconds=float(seconds))
+                datatype = literal_datatype(date_term)
+                lexical = result.date().isoformat() if datatype == XSD_NS + "date" else result.isoformat()
+                return _bind_or_test(ctx, ctx.goal.o, Literal(lexical, datatype))
     datatype = _promoted_numeric_datatype(values)
     if datatype == XSD_NS + "integer":
         ints = [_term_int(e) for e in values]
         if all(i is not None for i in ints):
-            return _bind_or_test(ctx, ctx.goal.o, Literal(str(sum(ints)), XSD_NS + "integer", bare=True))  # type: ignore[arg-type]
+            return _bind_or_test(ctx, ctx.goal.o, _int_lit(sum(ints)))  # type: ignore[arg-type]
     total = Decimal(0)
+    numeric_values: list[Decimal] = []
     for e in values:
         n = _term_num(e)
         if n is None:
             return []
+        numeric_values.append(n)
         total += n
+    if total and any(value < 0 for value in numeric_values) and any(value > 0 for value in numeric_values):
+        scale = max(abs(value) for value in numeric_values)
+        if scale and abs(total) <= scale * Decimal("1e-70"):
+            total = Decimal(0)
     return _bind_or_test(ctx, ctx.goal.o, _typed_num_lit(total, datatype))
 
 
@@ -263,7 +391,7 @@ def _math_product(ctx: BuiltinContext) -> list[Subst]:
             total_int = 1
             for i in ints:
                 total_int *= i  # type: ignore[operator]
-            return _bind_or_test(ctx, ctx.goal.o, Literal(str(total_int), XSD_NS + "integer", bare=True))
+            return _bind_or_test(ctx, ctx.goal.o, _int_lit(total_int))
     total = Decimal(1)
     for e in values:
         n = _term_num(e)
@@ -300,6 +428,29 @@ def _unary_num(ctx: BuiltinContext, fn: Callable[[Decimal], Decimal]) -> list[Su
 
 
 def _math_difference(ctx: BuiltinContext) -> list[Subst]:
+    elems = _list_elems(ctx, ctx.goal.s)
+    if elems is not None and len(elems) == 2:
+        values = [ctx.engine.apply_subst(e, ctx.subst) for e in elems]  # type: ignore[attr-defined]
+        left_date = _datetime_value(values[0])
+        right_date = _datetime_value(values[1])
+        if left_date is not None and right_date is not None:
+            seconds = Decimal(str((left_date - right_date).total_seconds()))
+            lexical = format(abs(seconds).normalize(), "f")
+            if "." not in lexical:
+                lexical = str(int(abs(seconds)))
+            duration = ("-" if seconds < 0 else "") + f"PT{lexical}S"
+            return _bind_or_test(ctx, ctx.goal.o, Literal(duration, XSD_NS + "duration"))
+        duration = _duration_seconds(values[1])
+        if left_date is not None and duration is not None and isinstance(values[0], Literal):
+            import datetime as _dt
+
+            result = left_date - _dt.timedelta(seconds=float(duration))
+            datatype = literal_datatype(values[0])
+            lexical = result.date().isoformat() if datatype == XSD_NS + "date" else result.isoformat()
+            return _bind_or_test(ctx, ctx.goal.o, Literal(lexical, datatype))
+        ints = [_term_int(value) for value in values]
+        if all(value is not None for value in ints):
+            return _bind_or_test(ctx, ctx.goal.o, _int_lit(ints[0] - ints[1]))  # type: ignore[operator]
     return _binary_num(ctx, lambda a, b: a - b)
 
 
@@ -319,17 +470,63 @@ def _math_quotient(ctx: BuiltinContext) -> list[Subst]:
 
 
 def _math_remainder(ctx: BuiltinContext) -> list[Subst]:
+    elems = _list_elems(ctx, ctx.goal.s)
+    if elems is not None and len(elems) == 2:
+        values = [ctx.engine.apply_subst(e, ctx.subst) for e in elems]  # type: ignore[attr-defined]
+        ints = [_term_int(value) for value in values]
+        if all(value is not None for value in ints) and ints[1] != 0:
+            quotient = abs(ints[0]) // abs(ints[1])  # type: ignore[arg-type]
+            if (ints[0] < 0) != (ints[1] < 0):
+                quotient = -quotient
+            return _bind_or_test(ctx, ctx.goal.o, _int_lit(ints[0] - quotient * ints[1]))  # type: ignore[operator]
     return _binary_num(ctx, lambda a, b: a % b)
 
 
 def _math_integer_quotient(ctx: BuiltinContext) -> list[Subst]:
+    elems = _list_elems(ctx, ctx.goal.s)
+    if elems is not None and len(elems) == 2:
+        values = [ctx.engine.apply_subst(e, ctx.subst) for e in elems]  # type: ignore[attr-defined]
+        ints = [_term_int(value) for value in values]
+        if all(value is not None for value in ints) and ints[1] != 0:
+            quotient = abs(ints[0]) // abs(ints[1])  # type: ignore[arg-type]
+            if (ints[0] < 0) != (ints[1] < 0):
+                quotient = -quotient
+            return _bind_or_test(ctx, ctx.goal.o, _int_lit(quotient))
     return _binary_num(ctx, lambda a, b: Decimal(int(a / b)))
 
 
 def _math_exponentiation(ctx: BuiltinContext) -> list[Subst]:
+    elems = _list_elems(ctx, ctx.goal.s)
+    if elems is not None and len(elems) == 2:
+        values = [ctx.engine.apply_subst(e, ctx.subst) for e in elems]  # type: ignore[attr-defined]
+        ints = [_term_int(value) for value in values]
+        if all(value is not None for value in ints) and ints[1] >= 0:
+            return _bind_or_test(ctx, ctx.goal.o, _int_lit(pow(ints[0], ints[1])))  # type: ignore[arg-type]
+        base = _term_num(values[0])
+        result_term = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
+        result = _term_num(result_term)
+        if base is not None and isinstance(values[1], Var) and result is not None:
+            base_float = float(base)
+            result_float = float(result)
+            if base_float > 0.0 and base_float != 1.0 and result_float > 0.0:
+                exponent = math.log(result_float) / math.log(base_float)
+                rounded = round(exponent)
+                if math.isclose(exponent, rounded, rel_tol=1e-12, abs_tol=1e-12):
+                    return _bind_or_test(ctx, elems[1], _int_lit(rounded))
+                return _bind_or_test(
+                    ctx,
+                    elems[1],
+                    _typed_num_lit(Decimal(str(exponent)), XSD_NS + "decimal"),
+                )
+
     def exponentiate(a: Decimal, b: Decimal) -> Decimal:
         if b == b.to_integral_value():
             return a ** int(b)
+        if a < 0 and abs(a) <= Decimal("1e-15"):
+            # Fractional powers use binary floating-point, matching Eyeling.
+            # Cancellation around an exact zero can leave a tiny negative
+            # Decimal residue before this conversion; treat it as signed zero.
+            a = Decimal(0)
         return Decimal(str(pow(float(a), float(b))))
     return _binary_num(ctx, exponentiate)
 
@@ -364,6 +561,18 @@ def _math_rounded(ctx: BuiltinContext) -> list[Subst]:
 
 
 def _list_first(ctx: BuiltinContext) -> list[Subst]:
+    subject = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
+    if isinstance(subject, Var):
+        results: list[Subst] = []
+        for candidate in _known_list_terms(ctx):
+            if not candidate.elems:
+                continue
+            nxt = ctx.unify_term(ctx.goal.s, candidate, ctx.subst)
+            if nxt is not None:
+                nxt = ctx.engine.unify_term(ctx.goal.o, candidate.elems[0], nxt)  # type: ignore[attr-defined]
+            if nxt is not None:
+                results.append(nxt)
+        return results
     elems = _list_elems(ctx, ctx.goal.s)
     if elems is None or not elems:
         return []
@@ -372,6 +581,18 @@ def _list_first(ctx: BuiltinContext) -> list[Subst]:
 
 
 def _list_rest(ctx: BuiltinContext) -> list[Subst]:
+    subject = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
+    if isinstance(subject, Var):
+        results: list[Subst] = []
+        for candidate in _known_list_terms(ctx):
+            if not candidate.elems:
+                continue
+            nxt = ctx.unify_term(ctx.goal.s, candidate, ctx.subst)
+            if nxt is not None:
+                nxt = ctx.engine.unify_term(ctx.goal.o, ListTerm(candidate.elems[1:]), nxt)  # type: ignore[attr-defined]
+            if nxt is not None:
+                results.append(nxt)
+        return results
     elems = _list_elems(ctx, ctx.goal.s)
     if not elems:
         return []
@@ -411,9 +632,23 @@ def _list_member(ctx: BuiltinContext) -> list[Subst]:
 
 
 def _list_append(ctx: BuiltinContext) -> list[Subst]:
-    elems = _list_elems(ctx, ctx.goal.s)
-    if elems is None:
+    subject = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
+    if not isinstance(subject, ListTerm):
         return []
+    result = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
+    if isinstance(result, ListTerm):
+        def split(parts: tuple[Term, ...], remaining: tuple[Term, ...], subst: Subst) -> list[Subst]:
+            if not parts:
+                return [subst] if not remaining else []
+            solutions: list[Subst] = []
+            for width in range(len(remaining) + 1):
+                nxt = ctx.engine.unify_term(parts[0], ListTerm(remaining[:width]), subst)  # type: ignore[attr-defined]
+                if nxt is not None:
+                    solutions.extend(split(parts[1:], remaining[width:], nxt))
+            return solutions
+
+        return split(subject.elems, result.elems, dict(ctx.subst))
+    elems = list(subject.elems)
     merged: list[Term] = []
     for e in elems:
         sub = _list_elems(ctx, e)
@@ -503,7 +738,14 @@ def _string_format(ctx: BuiltinContext) -> list[Subst]:
     for e in elems[1:]:
         v = ctx.engine.apply_subst(e, ctx.subst)  # type: ignore[attr-defined]
         if isinstance(v, Literal):
-            args.append(v.lexical)
+            integer = _term_int(v)
+            number = _term_num(v)
+            if integer is not None:
+                args.append(integer)
+            elif number is not None:
+                args.append(float(number))
+            else:
+                args.append(v.lexical)
         else:
             args.append(ctx.term_to_n3(v))
     try:
@@ -608,23 +850,34 @@ def _log_dtlit(ctx: BuiltinContext) -> list[Subst]:
     obj = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
     if isinstance(subject, Var) and isinstance(obj, Var):
         return [ctx.subst]
-    if isinstance(subject, Var) and isinstance(obj, Literal):
+    results: list[Subst] = []
+    if isinstance(obj, Literal):
         pair = ListTerm((Literal(obj.lexical, XSD_NS + "string"), Iri(literal_datatype(obj))))
-        return _bind_or_test(ctx, ctx.goal.s, pair)
+        nxt = ctx.unify_term(ctx.goal.s, pair, ctx.subst)
+        if nxt is not None:
+            results.append(nxt)
     elems = _list_elems(ctx, subject)
     if elems is None or len(elems) != 2:
-        return []
+        return results
     lex = ctx.engine.apply_subst(elems[0], ctx.subst)  # type: ignore[attr-defined]
     dt = ctx.engine.apply_subst(elems[1], ctx.subst)  # type: ignore[attr-defined]
     if not isinstance(lex, Literal) or not isinstance(dt, Iri):
-        return []
+        return results
     actual = Literal(lex.lexical, dt.value)
     if dt.value == RDF_NS + "langString" and isinstance(obj, Literal) and obj.lang and obj.lexical == lex.lexical:
-        return [ctx.subst]
+        if ctx.subst not in results:
+            results.append(ctx.subst)
+        return results
     if isinstance(obj, Literal):
         probe = BuiltinContext(Triple(actual, Iri(LOG_NS + "equalTo"), obj), ctx.subst, ctx.engine)
-        return _log_equal(probe)
-    return _bind_or_test(ctx, ctx.goal.o, actual)
+        for solution in _log_equal(probe):
+            if solution not in results:
+                results.append(solution)
+        return results
+    for solution in _bind_or_test(ctx, ctx.goal.o, actual):
+        if solution not in results:
+            results.append(solution)
+    return results
 
 
 def _log_langlit(ctx: BuiltinContext) -> list[Subst]:
@@ -709,11 +962,20 @@ def _log_includes(ctx: BuiltinContext) -> list[Subst]:
             ctx.engine.facts = old_facts  # type: ignore[attr-defined]
         return results
     old_facts = ctx.engine.facts  # type: ignore[attr-defined]
+    old_rule_fact_view = ctx.engine._rule_fact_view_active  # type: ignore[attr-defined]
+    old_backward_rules = ctx.engine.backward_rules  # type: ignore[attr-defined]
     try:
         ctx.engine.facts = list(scope.triples)  # type: ignore[attr-defined]
+        # An explicit quoted formula is a closed scope. Live top-level rules
+        # remain executable in the ambient engine but are not members of this
+        # formula unless represented by log:implies/log:impliedBy triples in it.
+        ctx.engine._rule_fact_view_active = False  # type: ignore[attr-defined]
+        ctx.engine.backward_rules = []  # type: ignore[attr-defined]
         return list(ctx.engine.solve(list(pattern.triples), ctx.subst))  # type: ignore[attr-defined]
     finally:
         ctx.engine.facts = old_facts  # type: ignore[attr-defined]
+        ctx.engine._rule_fact_view_active = old_rule_fact_view  # type: ignore[attr-defined]
+        ctx.engine.backward_rules = old_backward_rules  # type: ignore[attr-defined]
 
 
 def _log_not_includes(ctx: BuiltinContext) -> list[Subst]:
@@ -990,11 +1252,43 @@ def _list_reverse(ctx: BuiltinContext) -> list[Subst]:
     return _bind_or_test(ctx, ctx.goal.o, ListTerm(reversed(elems)))
 
 
-def _sort_key(ctx: BuiltinContext, t: Term) -> str:
+def _list_map(ctx: BuiltinContext) -> list[Subst]:
+    pair = _list_elems(ctx, ctx.goal.s)
+    if pair is None or len(pair) != 2:
+        return []
+    inputs = _list_elems(ctx, pair[0])
+    predicate = ctx.engine.apply_subst(pair[1], ctx.subst)  # type: ignore[attr-defined]
+    if inputs is None or not isinstance(predicate, Iri):
+        return []
+    results: list[Term] = []
+    for item in inputs:
+        value_var = ctx.engine.standardize_term_apart(Var("mapValue"))  # type: ignore[attr-defined]
+        if not isinstance(value_var, Var):
+            return []
+        goal = Triple(ctx.engine.apply_subst(item, ctx.subst), predicate, value_var)  # type: ignore[attr-defined]
+        for solution in ctx.engine.solve([goal], dict(ctx.subst)):  # type: ignore[attr-defined]
+            value = ctx.engine.apply_subst(value_var, solution)  # type: ignore[attr-defined]
+            if not isinstance(value, Var):
+                results.append(value)
+    return _bind_list_or_test(ctx, ctx.goal.o, results)
+
+
+def _sort_key(ctx: BuiltinContext, t: Term) -> tuple:
+    if isinstance(t, Literal):
+        number = numeric_value(t)
+        if number is not None and not number.is_nan():
+            return (0, number)
+        return (1, literal_datatype(t), (t.lang or "").lower(), t.lexical)
+    if isinstance(t, ListTerm):
+        return (2, tuple(_sort_key(ctx, item) for item in t.elems))
+    if isinstance(t, Iri):
+        return (3, t.value)
+    if isinstance(t, Blank):
+        return (4, t.label)
     try:
-        return ctx.term_to_n3(t)
+        return (5, ctx.term_to_n3(t))
     except Exception:
-        return repr(t)
+        return (5, repr(t))
 
 
 def _list_sort(ctx: BuiltinContext) -> list[Subst]:
@@ -1234,6 +1528,9 @@ def _log_collect_all_in(ctx: BuiltinContext) -> list[Subst]:
         elif isinstance(term, ListTerm):
             for item in term.elems:
                 remember_bound_blanks(item)
+        elif isinstance(term, OpenListTerm):
+            for item in term.prefix:
+                remember_bound_blanks(item)
         elif isinstance(term, GraphTerm):
             for triple in term.triples:
                 remember_bound_blanks(triple.s)
@@ -1242,8 +1539,7 @@ def _log_collect_all_in(ctx: BuiltinContext) -> list[Subst]:
 
     for bound_value in ctx.subst.values():
         applied_bound = ctx.engine.apply_subst(bound_value, ctx.subst)  # type: ignore[attr-defined]
-        if isinstance(applied_bound, Blank):
-            remember_bound_blanks(applied_bound)
+        remember_bound_blanks(applied_bound)
 
     def existential(term: Term) -> Term:
         if isinstance(term, Blank):
@@ -1261,10 +1557,25 @@ def _log_collect_all_in(ctx: BuiltinContext) -> list[Subst]:
     if not isinstance(formula, GraphTerm):
         return []
     values: list[Term] = []
-    for solution in ctx.engine.solve(list(formula.triples), dict(ctx.subst)):  # type: ignore[attr-defined]
-        value = ctx.engine.apply_subst(value_term, solution)  # type: ignore[attr-defined]
-        if not isinstance(value, Var) and value not in values:
-            values.append(value)
+    scope = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
+    old_facts = ctx.engine.facts  # type: ignore[attr-defined]
+    old_rule_fact_view = ctx.engine._rule_fact_view_active  # type: ignore[attr-defined]
+    old_backward_rules = ctx.engine.backward_rules  # type: ignore[attr-defined]
+    try:
+        if isinstance(scope, GraphTerm):
+            ctx.engine.facts = list(scope.triples)  # type: ignore[attr-defined]
+            ctx.engine._rule_fact_view_active = False  # type: ignore[attr-defined]
+            ctx.engine.backward_rules = []  # type: ignore[attr-defined]
+        for solution in ctx.engine.solve(list(formula.triples), dict(ctx.subst)):  # type: ignore[attr-defined]
+            value = ctx.engine.apply_subst(value_term, solution)  # type: ignore[attr-defined]
+            # collectAllIn is a solution sequence, not a set. Distinct proof
+            # solutions may intentionally project the same value.
+            if not isinstance(value, Var):
+                values.append(value)
+    finally:
+        ctx.engine.facts = old_facts  # type: ignore[attr-defined]
+        ctx.engine._rule_fact_view_active = old_rule_fact_view  # type: ignore[attr-defined]
+        ctx.engine.backward_rules = old_backward_rules  # type: ignore[attr-defined]
     return _bind_list_or_test(ctx, output_term, values)
 
 
@@ -1276,10 +1587,23 @@ def _log_for_all_in(ctx: BuiltinContext) -> list[Subst]:
     condition = ctx.engine.apply_subst(parts[1], ctx.subst)  # type: ignore[attr-defined]
     if not isinstance(generator, GraphTerm) or not isinstance(condition, GraphTerm):
         return []
-    for solution in ctx.engine.solve(list(generator.triples), dict(ctx.subst)):  # type: ignore[attr-defined]
-        if next(ctx.engine.solve(list(condition.triples), solution), None) is None:  # type: ignore[attr-defined]
-            return []
-    return [ctx.subst]
+    scope = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
+    old_facts = ctx.engine.facts  # type: ignore[attr-defined]
+    old_rule_fact_view = ctx.engine._rule_fact_view_active  # type: ignore[attr-defined]
+    old_backward_rules = ctx.engine.backward_rules  # type: ignore[attr-defined]
+    try:
+        if isinstance(scope, GraphTerm):
+            ctx.engine.facts = list(scope.triples)  # type: ignore[attr-defined]
+            ctx.engine._rule_fact_view_active = False  # type: ignore[attr-defined]
+            ctx.engine.backward_rules = []  # type: ignore[attr-defined]
+        for solution in ctx.engine.solve(list(generator.triples), dict(ctx.subst)):  # type: ignore[attr-defined]
+            if next(ctx.engine.solve(list(condition.triples), solution), None) is None:  # type: ignore[attr-defined]
+                return []
+        return [ctx.subst]
+    finally:
+        ctx.engine.facts = old_facts  # type: ignore[attr-defined]
+        ctx.engine._rule_fact_view_active = old_rule_fact_view  # type: ignore[attr-defined]
+        ctx.engine.backward_rules = old_backward_rules  # type: ignore[attr-defined]
 
 
 def _log_parsed_as_n3(ctx: BuiltinContext) -> list[Subst]:
@@ -1342,6 +1666,7 @@ def _install_defaults() -> None:
         "notMember": _list_not_member,
         "reverse": _list_reverse,
         "sort": _list_sort,
+        "map": _list_map,
         "firstRest": _list_first_rest,
     }.items():
         register_builtin(LIST_NS + local, fn)
