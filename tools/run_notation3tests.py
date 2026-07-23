@@ -42,7 +42,7 @@ def make_shim(path: Path) -> None:
 
 
 def remove_skipped_network_outputs(suite: Path) -> None:
-    """Prevent stale results from being counted for NETWORKING=0 fixtures."""
+    """Prevent an offline run from counting stale networking results."""
     tests = suite / "tests"
     if not tests.exists():
         return
@@ -92,10 +92,9 @@ def main(argv: list[str] | None = None) -> int:
         env = os.environ.copy()
         env["PATH"] = str(shim_dir) + os.pathsep + env.get("PATH", "")
         env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
-        # The Python port intentionally does not perform Web dereferencing.
-        # Callers can explicitly set NETWORKING=1 when testing an extension
-        # that adds it; otherwise report only the locally executable corpus.
-        env.setdefault("NETWORKING", "0")
+        # HTTP dereferencing is supported by the log:* built-ins. Callers can
+        # still set NETWORKING=0 explicitly for an offline conformance run.
+        env.setdefault("NETWORKING", "1")
         if env["NETWORKING"] == "0":
             remove_skipped_network_outputs(suite)
         # The suite has varied over time. Prefer a Python/pytest target when

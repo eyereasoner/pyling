@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation, ROUND_FLOOR, getcontext
 from typing import Callable, Iterable, Mapping, MutableMapping
 from urllib.parse import quote
 
+from .deref import fetch_http_document, strip_fragment
 from .terms import (
     CRYPTO_NS,
     DT_NS,
@@ -727,20 +728,85 @@ def _log_not_includes(ctx: BuiltinContext) -> list[Subst]:
     return [] if _log_includes(ctx) else [ctx.subst]
 
 
+def _document_to_formula(text: str, *, base_iri: str = "") -> GraphTerm:
+    from .parser import parse_n3
+
+    blank_prefix = "_:http_" + hashlib.sha256(base_iri.encode()).hexdigest()[:12] + "_"
+    doc = parse_n3(text, base_iri=base_iri or None, blank_prefix=blank_prefix)
+    triples = list(doc.triples)
+    for rule in doc.forward_rules:
+        conclusion: Term = (
+            Literal("false", XSD_NS + "boolean", bare=True)
+            if rule.is_fuse
+            else GraphTerm(rule.conclusion)
+        )
+        triples.append(Triple(GraphTerm(rule.premise), Iri(LOG_NS + "implies"), conclusion))
+    for rule in doc.backward_rules:
+        triples.append(
+            Triple(
+                GraphTerm(rule.conclusion),
+                Iri(LOG_NS + "impliedBy"),
+                GraphTerm(rule.premise),
+            )
+        )
+    return GraphTerm(triples)
+
+
+def _dereference_formula(iri: str) -> GraphTerm | None:
+    document = fetch_http_document(strip_fragment(iri))
+    if document is None:
+        return None
+    try:
+        return _document_to_formula(document.text, base_iri=document.url)
+    except Exception:
+        return None
+
+
+def _log_content(ctx: BuiltinContext) -> list[Subst]:
+    source = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
+    if not isinstance(source, Iri):
+        return []
+    document = fetch_http_document(strip_fragment(source.value))
+    if document is None:
+        return []
+    return _bind_or_test(ctx, ctx.goal.o, Literal(document.text, XSD_NS + "string"))
+
+
 def _log_semantics(ctx: BuiltinContext) -> list[Subst]:
-    s = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
-    # This port deliberately does not dereference the Web for safety. For formula
-    # inputs, log:semantics is identity; for strings, parse as N3 if possible.
-    if isinstance(s, GraphTerm):
-        return _bind_or_test(ctx, ctx.goal.o, s)
-    if isinstance(s, Literal):
-        try:
-            from .parser import parse_n3
-            doc = parse_n3(s.lexical, prefix_env=ctx.engine.prefixes)  # type: ignore[attr-defined]
-            return _bind_or_test(ctx, ctx.goal.o, GraphTerm(doc.triples))
-        except Exception:
-            return []
-    return []
+    source = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
+    if isinstance(source, GraphTerm):
+        return _bind_or_test(ctx, ctx.goal.o, source)
+    if not isinstance(source, Iri):
+        return []
+    formula = _dereference_formula(source.value)
+    if formula is None:
+        return []
+    formula = ctx.engine.standardize_term_apart(  # type: ignore[attr-defined]
+        formula,
+        scope_key="log:semantics:" + strip_fragment(source.value),
+    )
+    return _bind_or_test(ctx, ctx.goal.o, formula)
+
+
+def _log_semantics_or_error(ctx: BuiltinContext) -> list[Subst]:
+    source = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
+    if not isinstance(source, Iri):
+        return []
+    formula = _dereference_formula(source.value)
+    if formula is not None:
+        formula = ctx.engine.standardize_term_apart(  # type: ignore[attr-defined]
+            formula,
+            scope_key="log:semantics:" + strip_fragment(source.value),
+        )
+    result: Term = (
+        formula
+        if formula is not None
+        else Literal(
+            f"error(dereference_or_parse_failed,{strip_fragment(source.value)})",
+            XSD_NS + "string",
+        )
+    )
+    return _bind_or_test(ctx, ctx.goal.o, result)
 
 
 def _log_conclusion(ctx: BuiltinContext) -> list[Subst]:
@@ -1196,7 +1262,19 @@ def _log_for_all_in(ctx: BuiltinContext) -> list[Subst]:
 
 
 def _log_parsed_as_n3(ctx: BuiltinContext) -> list[Subst]:
-    return _log_semantics(ctx)
+    source = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
+    if not isinstance(source, Literal):
+        return []
+    try:
+        formula = _document_to_formula(source.lexical)
+        formula = ctx.engine.standardize_term_apart(  # type: ignore[attr-defined]
+            formula,
+            scope_key="log:parsedAsN3:" + hashlib.sha256(source.lexical.encode()).hexdigest(),
+        )
+        return _bind_or_test(ctx, ctx.goal.o, formula)
+    except Exception:
+        return []
+
 
 def _install_defaults() -> None:
     for local, fn in {
@@ -1287,8 +1365,8 @@ def _install_defaults() -> None:
         "collectAllIn": _log_collect_all_in,
         "forAllIn": _log_for_all_in,
         "parsedAsN3": _log_parsed_as_n3,
-        "content": _log_semantics,
-        "semanticsOrError": _log_semantics,
+        "content": _log_content,
+        "semanticsOrError": _log_semantics_or_error,
     }.items():
         register_builtin(LOG_NS + local, fn)
     for local, fn in {

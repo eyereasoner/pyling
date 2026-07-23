@@ -220,6 +220,33 @@ def test_dynamic_log_implies():
     assert ":a :q :b ." in out
 
 
+def test_log_parsed_as_n3_standardizes_inner_variables_apart():
+    out = reason('''
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+@prefix : <http://example.org/> .
+
+{
+  """
+@prefix : <http://example.org/ns#> .
+:Alice a :Person.
+{ ?X a :Person } => {
+  :foo :bar ?X.
+  { :foo :bar :Alice } => { :test :is true. }.
+}.
+""" log:parsedAsN3 ?X.
+}
+=>
+{
+  :foo :bar ?X.
+  { :foo :bar ?N3. } => { :result :has :success. }.
+}.
+
+{ :result :has :success. } => { :test :is true. }.
+''')
+    assert ":result :has :success ." in out
+    assert ":test :is true ." in out
+
+
 def test_math_list_string_builtins():
     out = reason("""
 @prefix : <http://example.org/> .

@@ -121,6 +121,20 @@ MESSAGE
     assert "eymsg:offset 3" in results[2].closure_n3
 
 
+def test_stream_messages_accepts_directive_markers_without_a_trailing_heartbeat():
+    log = '''@version "1.2-messages" .
+@prefix : <http://example.org/> .
+:a :p 1 .
+@message .
+:b :p 2 .
+@message .
+'''
+    results = list(reason_message_stream(log, include_input_facts_in_closure=True))
+    assert len(results) == 2
+    assert "<http://example.org/a> <http://example.org/p>" in results[0].closure_n3
+    assert "<http://example.org/b> <http://example.org/p>" in results[1].closure_n3
+
+
 def test_rdf12_surface_checks_reject_bad_line_syntax():
     with pytest.raises(RdfSyntaxError):
         assert_rdf12_surface_syntax('<//example/s> <http://example/p> <http://example/o> .', format="nt")

@@ -47,7 +47,7 @@ from .terms import (
 )
 
 MESSAGE_VERSION_RE = re.compile(r"^\s*@?VERSION\s+['\"](?:1\.1|1\.2|1\.2-basic)-messages['\"]\s*\.?\s*(?:#.*)?$", re.I | re.M)
-MESSAGE_LINE_RE = re.compile(r"^\s*@?MESSAGE\s*(?:#.*)?$", re.I)
+MESSAGE_LINE_RE = re.compile(r"^\s*@?MESSAGE(?:\s*\.)?\s*(?:#.*)?$", re.I)
 PREFIX_LINE_RE = re.compile(r"^\s*(?:@prefix\s+([^\s]+)\s+<([^>]*)>\s*\.?|PREFIX\s+([^\s]+)\s+<([^>]*)>\s*\.?|@base\s+<([^>]*)>\s*\.?|BASE\s+<([^>]*)>\s*\.?)\s*(?:#.*)?$", re.I)
 VERSION_LINE_RE = re.compile(
     r"^\s*(?:VERSION\s+(['\"])([^'\"\r\n]+)\1|@version\s+(['\"])([^'\"\r\n]+)\3\s*\.)\s*(?:#.*)?$",
@@ -831,6 +831,7 @@ def _directive_prelude(text: str) -> str:
 
 def split_rdf_messages(text: str) -> list[str]:
     chunks = [""]
+    ended_with_marker = False
     for line in str(text or "").splitlines(True):
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -840,8 +841,12 @@ def split_rdf_messages(text: str) -> list[str]:
             continue
         if MESSAGE_LINE_RE.match(line):
             chunks.append("")
+            ended_with_marker = True
             continue
         chunks[-1] += line
+        ended_with_marker = False
+    if ended_with_marker:
+        chunks.pop()
     return chunks
 
 

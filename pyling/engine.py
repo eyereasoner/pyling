@@ -5,7 +5,7 @@ import asyncio
 import json
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Iterator, Mapping, MutableMapping, Optional
+from typing import Any, Callable, Iterable, Iterator, Mapping, MutableMapping, Optional
 
 from .builtins import BuiltinContext, get_builtin
 from .parser import Document, N3SyntaxError, parse_n3, parse_sources
@@ -133,6 +133,7 @@ class Engine:
         self._agenda_all_entries: list[_AgendaEntry] = []
         self._fresh_counter = 0
         self._std_counter = 0
+        self._standardized_term_cache: dict[str, Term] = {}
         self.max_depth = int(self.options.get("max_depth", self.options.get("maxDepth", 128)))
         self.max_iterations = int(self.options.get("max_iterations", self.options.get("maxIterations", 1000)))
         self.skolem_salt = str(uuid.uuid4())
@@ -975,20 +976,44 @@ class Engine:
     def terms_equivalent(self, a: Term, b: Term, subst: Subst) -> bool:
         return self.unify_term(a, b, subst) is not None
 
-    def standardize_apart(self, rule: Rule) -> Rule:
+    def _fresh_variable_renamer(self, kind: str) -> Callable[[Term], Term]:
         self._std_counter += 1
-        prefix = f"_r{self._std_counter}_"
+        prefix = f"_{kind}{self._std_counter}_"
+        renamed: dict[str, Var] = {}
+
+        def variable(name: str) -> Var:
+            return renamed.setdefault(name, Var(prefix + name))
+
         def cv(t: Term) -> Term:
             if isinstance(t, Var):
-                return Var(prefix + t.name)
+                return variable(t.name)
             if isinstance(t, ListTerm):
                 return ListTerm(cv(e) for e in t.elems)
             if isinstance(t, OpenListTerm):
-                return OpenListTerm((cv(e) for e in t.prefix), prefix + t.tail_var)
+                return OpenListTerm((cv(e) for e in t.prefix), variable(t.tail_var).name)
             if isinstance(t, GraphTerm):
                 return GraphTerm(Triple(cv(x.s), cv(x.p), cv(x.o)) for x in t.triples)
             return t
-        return Rule((Triple(cv(t.s), cv(t.p), cv(t.o)) for t in rule.premise), (Triple(cv(t.s), cv(t.p), cv(t.o)) for t in rule.conclusion), rule.is_forward, rule.is_fuse)
+
+        return cv
+
+    def standardize_term_apart(self, term: Term, *, scope_key: str | None = None) -> Term:
+        """Give variables in an external term an engine-local lexical scope."""
+        if scope_key is not None and scope_key in self._standardized_term_cache:
+            return self._standardized_term_cache[scope_key]
+        standardized = self._fresh_variable_renamer("e")(term)
+        if scope_key is not None:
+            self._standardized_term_cache[scope_key] = standardized
+        return standardized
+
+    def standardize_apart(self, rule: Rule) -> Rule:
+        cv = self._fresh_variable_renamer("r")
+        return Rule(
+            (Triple(cv(t.s), cv(t.p), cv(t.o)) for t in rule.premise),
+            (Triple(cv(t.s), cv(t.p), cv(t.o)) for t in rule.conclusion),
+            rule.is_forward,
+            rule.is_fuse,
+        )
 
     def rdf_collection_to_list(self, node: Term) -> list[Term] | None:
         # Literals and formulas can never be rdf:first/rdf:rest subjects, so
