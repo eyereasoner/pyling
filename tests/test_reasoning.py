@@ -220,6 +220,57 @@ def test_dynamic_log_implies():
     assert ":a :q :b ." in out
 
 
+def test_dynamic_quoted_formula_head_activates_derived_rule():
+    out = reason("""
+@prefix : <http://example.org/> .
+:holder :formula { { ?x a :Cat } => { ?x a :Animal } } .
+{ :holder :formula ?formula } => ?formula .
+:milo a :Cat .
+{ :milo a :Animal } => { :test :passed true } .
+""")
+    assert ":milo a :Animal ." in out
+    assert ":test :passed true ." in out
+
+
+def test_true_rule_bodies_and_derived_backward_rules_are_active():
+    out = reason("""
+@prefix : <http://example.org/> .
+true => {
+  { :s :base :o } <= true .
+} .
+{ :s :base :o } => { :test :derived true } .
+{ () :total 0 } <= { true. } .
+{ () :total ?value } => { :test :total ?value } .
+""")
+    assert ":test :derived true ." in out
+    assert ":test :total 0 ." in out
+
+
+def test_prefixed_name_local_part_accepts_interior_dot():
+    out = reason("""
+@prefix res: <http://example.org/resource#> .
+@prefix : <http://example.org/> .
+res:COUNTRY_St.%20Helena :label "St. Helena" .
+{ res:COUNTRY_St.%20Helena :label ?label } => { :test :label ?label } .
+""")
+    assert ':test :label "St. Helena" .' in out
+
+
+def test_rdf_rule_detection_ignores_operator_text_inside_literals():
+    result = reason_stream(
+        """
+@prefix : <http://example.org/> .
+:metadata {
+  :run :description "Demonstrates recursive <= rules." .
+}
+""",
+        rdf=True,
+        rdf12=True,
+        include_input_facts_in_closure=True,
+    )
+    assert any(getattr(tr.s, "value", None) == "http://example.org/metadata" for tr in result.facts)
+
+
 def test_log_parsed_as_n3_standardizes_inner_variables_apart():
     out = reason('''
 @prefix log: <http://www.w3.org/2000/10/swap/log#> .

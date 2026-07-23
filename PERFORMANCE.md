@@ -15,8 +15,11 @@ The shared example benchmarks were rerun locally on 2026-07-23.
 
 - Eyeling's own runner passed all 224 runnable examples against their golden
   outputs.
-- In the full three-reasoner survey, pyling and Eyeling returned normally with
-  matching fact counts on 125 examples; FuXi never reported a derived fact.
+- In the current pyling/Eyeling survey, both returned normally on 211 examples
+  and reported matching fact and derived-fact counts on 142 of them.
+- All 20 pyling syntax errors recorded by the earlier survey have been
+  eliminated. Nine were still reproducible before the fixes described below;
+  the other 11 had already been fixed by RDF/TriG compatibility work.
 - pyling and Eyeling completed all four examples and reported identical fact
   and derived-fact counts.
 - FuXi completed two of the three attempted examples as a process, but reported
@@ -53,16 +56,18 @@ npm run test:examples
 All 224 examples passed in 25.70 seconds. That is the semantic baseline and
 includes the expected inference-fuse exits from `fuse.n3` and `liar.n3`.
 
-The three-reasoner survey then ran one measured iteration per case, with no
-warmup and a 10-second timeout:
+The suite was rerun for pyling and Eyeling after investigating the unsupported
+cases, using one measured iteration per case, no warmup, and a 10-second
+timeout. The FuXi row is retained from the earlier three-reasoner survey:
 
 | Reasoner | Normal returns | Other outcomes | Cases reporting derived facts |
 |---|---:|---|---:|
 | Eyeling | 222 | 2 expected inference-fuse exits | 209 |
-| pyling | 192 | 20 syntax errors, 7 fuse exits, 5 timeouts | 153 |
+| pyling | 212 | 7 fuse exits, 5 timeouts | 169 |
 | FuXi | 165 | 35 loader errors, 22 syntax errors, 2 timeouts | 0 |
 
-Only `fuse.n3` explicitly expected one of pyling's seven fuse exits. Conversely,
+Only `fuse.n3` explicitly expected one of pyling's seven fuse exits. The other
+six indicate semantic differences in built-ins or rule evaluation. Conversely,
 pyling returned normally for `liar.n3`, where the Eyeling golden test expects a
 fuse. A normal return should therefore not be read as a passed example.
 
@@ -71,19 +76,19 @@ do not represent the same work as Eyeling and pyling, so there is no valid
 three-way speed ranking from this suite.
 
 pyling and Eyeling both returned normally with matching fact and derived-fact
-counts in 125 cases. After excluding `queens.n3`, which uses an Eyeling-only
-JavaScript built-in but happens to have matching top-level counts, 124 cases
+counts in 142 cases. After excluding `queens.n3`, which uses an Eyeling-only
+JavaScript built-in but happens to have matching top-level counts, 141 cases
 remain as the most defensible timing cohort:
 
-| Comparison over 124 cases | Result |
+| Comparison over 141 cases | Result |
 |---|---:|
-| Cases where pyling was faster | 94 |
-| Cases where Eyeling was faster | 30 |
-| Median pyling time | 6.27 ms |
-| Median Eyeling time | 17.64 ms |
-| Median per-case pyling/Eyeling ratio | 0.446 |
+| Cases where pyling was faster | 113 |
+| Cases where Eyeling was faster | 28 |
+| Median pyling time | 5.98 ms |
+| Median Eyeling time | 14.40 ms |
+| Median per-case pyling/Eyeling ratio | 0.474 |
 
-The median per-case ratio means pyling was about 2.24 times faster for the
+The median per-case ratio means pyling was about 2.11 times faster for the
 typical case in this cohort. Most examples are small, however. Several larger
 or recursive examples favor Eyeling:
 
@@ -97,8 +102,34 @@ or recursive examples favor Eyeling:
 | Deep taxonomy, 100,000 levels | timeout | 2,436.58 ms | not directly comparable |
 
 Matching counts are weaker than comparing normalized complete output. These
-124 rows are useful performance evidence, not a claim that pyling passed 124
+141 rows are useful performance evidence, not a claim that pyling passed 141
 of Eyeling's golden tests.
+
+### Previously unsupported cases
+
+The current implementation parses and executes every Eyeling example that
+previously ended in a pyling syntax error. The reproducible failures were fixed
+as follows:
+
+| Cases | Cause | Fix | Derived counts |
+|---|---|---|---|
+| `backward-recursion` | `<=` inside a TriG metadata string was mistaken for a rule | Token-aware rule detection and RDF 1.2 sidecar mode | Match |
+| `rdf-dataset`, `triple-terms` | RDF 1.2 TriG sidecars were parsed in RDF 1.1 mode | Benchmark now enables `rdf12` for RDF sidecars | Match |
+| `derived-backward-rule-2` | `true` bodies and rules derived from quoted formulas were not activated | Empty-body normalization and derived-rule registration | Match |
+| `quoted-head-unquote`, `quoted-head-unquote-select` | A variable resolving to a quoted formula was rejected as a rule head | Dynamic quoted-formula heads | Match |
+| `digital-product-passport`, `goldbach-1000` | `{ true. }` and `{ true }` were rejected | Empty quoted-formula syntax | Match for Digital Product Passport; Goldbach still incomplete |
+| `path-discovery` | Interior dots in prefixed-name local parts were tokenized as statement terminators | PN_LOCAL interior-dot support | Still incomplete |
+
+`goldbach-1000` and `path-discovery` now parse and return normally, but pyling
+reports fewer derived facts than Eyeling (0 versus 667, and 0 versus 3,
+respectively). They remain semantic compatibility work, not valid performance
+comparisons. Goldbach depends on Eyeling's deferred-builtin proof search to
+enumerate a recursive backward range before running arithmetic; pyling's
+current goal ordering does not reproduce that enumeration. Path discovery has
+the same broader shape: a recursive backward `:route` proof feeds a scoped
+`log:collectAllIn` aggregate, but pyling currently produces no aggregate
+binding. The remaining non-normal pyling outcomes are seven fuse exits and five
+10-second timeouts; none is a parser failure.
 
 ## pyling versus Eyeling
 
@@ -170,7 +201,8 @@ intersections, and keys as the most useful optimization targets.
 
 The local comparison used:
 
-- pyling commit `e5affe7`
+- pyling working tree based on commit `764e313`, including the compatibility
+  fixes documented above
 - Eyeling 2.35.1, commit `cb29f46`, loaded from `../eyeling`
 - FuXi 2.0.1 on Python 3.13.14
 - Python 3.12.3, Node.js 25.9.0

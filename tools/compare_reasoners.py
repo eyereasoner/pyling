@@ -507,6 +507,7 @@ def run_pyling_once(case: BenchmarkCase, args: argparse.Namespace) -> Sample:
     result = reason_stream(
         input_data,
         rdf=case.rdf,
+        rdf12=case.rdf,
         input_format=case.input_format,
         include_input_facts_in_closure=args.include_input_facts,
         max_iterations=args.max_iterations,
@@ -524,6 +525,7 @@ def run_pyling_subprocess_once(case: BenchmarkCase, args: argparse.Namespace) ->
     payload = {
         "sources": list(case.sources),
         "rdf": case.rdf,
+        "rdf12": case.rdf,
         "input_format": case.input_format,
         "include_input_facts": args.include_input_facts,
         "max_iterations": args.max_iterations,
@@ -573,6 +575,7 @@ start = time.perf_counter()
 result = reason_stream(
     input_data,
     rdf=payload["rdf"],
+    rdf12=payload["rdf12"],
     input_format=payload["input_format"],
     include_input_facts_in_closure=payload["include_input_facts"],
     max_iterations=payload["max_iterations"],

@@ -713,7 +713,7 @@ def _guess_format(text: str, requested: str | None = None) -> str:
     if requested and requested.lower() != "auto":
         return _format_alias(requested)
     s = str(text or "")
-    if re.search(r"(?m)^\s*(?:GRAPH\s+)?(?:<[^>]+>|[A-Za-z_][\w.-]*:[^\s{]*|_:[^\s{]+)\s*\{", s):
+    if re.search(r"(?m)^\s*(?:GRAPH\s+)?(?:<[^>]+>|[A-Za-z_][\w.-]*:[^\s{]*|_:[^\s{]+|:[^\s{]+)\s*\{", s):
         return "trig"
     if re.search(r"(?m)^\s*<[^>]+>\s+<[^>]+>\s+", s):
         # Could be N-Triples/N-Quads. rdflib's turtle parser handles many NT

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Iterator, Mapping, MutableMapping, Optional
 
 from .builtins import BuiltinContext, get_builtin
-from .parser import Document, N3SyntaxError, parse_n3, parse_sources
+from .parser import Document, N3SyntaxError, lex, parse_n3, parse_sources
 from .rdf import is_rdf_message_log, parse_rdf_graph, parse_rdf_message_log, parse_rdf_text, iter_rdf_message_documents, triples_to_rdflib_graph
 from .printing import literal_as_output_string, term_to_n3, triples_to_n3
 from .store import create_fact_store
@@ -17,6 +17,7 @@ from .terms import (
     LOG_IMPLIES,
     LOG_MEMOIZE,
     LOG_OUTPUT_STRING,
+    LOG_QUERY,
     MATH_NS,
     OWL_DIFFERENT_FROM,
     OWL_SAME_AS,
@@ -37,6 +38,7 @@ from .terms import (
     bool_value,
     numeric_value,
     rule_from_primitive,
+    rule_to_primitive,
     term_from_primitive,
     term_to_primitive,
     triple_from_primitive,
@@ -158,6 +160,7 @@ class Engine:
             "c": [triple_to_primitive(t) for t in r.conclusion],
             "f": r.is_forward,
             "x": r.is_fuse,
+            "d": term_to_primitive(r.dynamic_conclusion) if r.dynamic_conclusion is not None else None,
         }, sort_keys=True, default=str)
         if hasattr(self, "_rule_key_cache"):
             self._rule_key_cache[r] = key
@@ -271,20 +274,31 @@ class Engine:
             self._agenda_queue.append(tr)
         if inferred:
             self.derived.append(tr)
-        if isinstance(tr.p, Iri) and isinstance(tr.s, GraphTerm) and isinstance(tr.o, GraphTerm):
-            if tr.p.value == LOG_IMPLIES:
-                self.add_rule(Rule(tr.s.triples, tr.o.triples, True))
-            elif tr.p.value == LOG_IMPLIED_BY:
-                self.add_rule(Rule(tr.s.triples, tr.o.triples, False))
-        elif (
-            isinstance(tr.p, Iri)
-            and tr.p.value == LOG_IMPLIES
-            and isinstance(tr.s, GraphTerm)
-            and isinstance(tr.o, Literal)
-            and bool_value(tr.o) is False
-        ):
-            self.add_rule(Rule(tr.s.triples, (), True, True))
+        rule = self._rule_from_fact(tr)
+        if rule is not None:
+            self.add_rule(rule)
         return True
+
+    def _rule_from_fact(self, tr: Triple) -> Rule | None:
+        if not isinstance(tr.p, Iri):
+            return None
+        if tr.p.value == LOG_IMPLIES:
+            if isinstance(tr.s, GraphTerm) and isinstance(tr.o, GraphTerm):
+                return Rule(tr.s.triples, tr.o.triples, True)
+            if isinstance(tr.s, GraphTerm) and isinstance(tr.o, Literal):
+                value = bool_value(tr.o)
+                if value is False:
+                    return Rule(tr.s.triples, (), True, True)
+                if value is True:
+                    return Rule(tr.s.triples, (), True)
+            if isinstance(tr.s, Literal) and bool_value(tr.s) is True and isinstance(tr.o, GraphTerm):
+                return Rule((), tr.o.triples, True)
+        if tr.p.value == LOG_IMPLIED_BY and isinstance(tr.s, GraphTerm):
+            if isinstance(tr.o, GraphTerm):
+                return Rule(tr.s.triples, tr.o.triples, False)
+            if isinstance(tr.o, Literal) and bool_value(tr.o) is True:
+                return Rule(tr.s.triples, (), False)
+        return None
 
     def add_rule(self, rule: Rule) -> bool:
         key = self._rule_key(rule)
@@ -322,7 +336,7 @@ class Engine:
         )
 
     def _is_fast_single_premise_rule(self, rule: Rule) -> bool:
-        if rule.is_fuse or len(rule.premise) != 1:
+        if rule.is_fuse or rule.dynamic_conclusion is not None or len(rule.premise) != 1:
             return False
         if self.backward_rules:
             # A backward rule may prove the premise without an extensional fact.
@@ -419,11 +433,9 @@ class Engine:
     def run(self) -> ReasonStreamResult:
         # Top-level log:implies facts are live rules immediately.
         for tr in list(self.facts):
-            if isinstance(tr.p, Iri) and isinstance(tr.s, GraphTerm) and isinstance(tr.o, GraphTerm):
-                if tr.p.value == LOG_IMPLIES:
-                    self.add_rule(Rule(tr.s.triples, tr.o.triples, True))
-                elif tr.p.value == LOG_IMPLIED_BY:
-                    self.add_rule(Rule(tr.s.triples, tr.o.triples, False))
+            rule = self._rule_from_fact(tr)
+            if rule is not None:
+                self.add_rule(rule)
         self._build_single_premise_agenda()
         self._agenda_active = bool(self._agenda_indexed_rules)
         if self._agenda_active:
@@ -447,7 +459,14 @@ class Engine:
                     if firing_key in self._fired_rule_bindings:
                         continue
                     self._fired_rule_bindings.add(firing_key)
-                    for head in rule.conclusion:
+                    heads = list(rule.conclusion)
+                    if rule.dynamic_conclusion is not None:
+                        dynamic = self.apply_subst(rule.dynamic_conclusion, subst)
+                        if isinstance(dynamic, GraphTerm):
+                            heads.extend(dynamic.triples)
+                        elif isinstance(dynamic, Literal) and bool_value(dynamic) is False:
+                            raise InferenceFuseError()
+                    for head in heads:
                         fact = self.apply_subst_triple(head, subst, ground_blanks=True)
                         if self.add_fact(fact, inferred=True):
                             changed = True
@@ -1013,6 +1032,7 @@ class Engine:
             (Triple(cv(t.s), cv(t.p), cv(t.o)) for t in rule.conclusion),
             rule.is_forward,
             rule.is_fuse,
+            cv(rule.dynamic_conclusion) if rule.dynamic_conclusion is not None else None,
         )
 
     def rdf_collection_to_list(self, node: Term) -> list[Term] | None:
@@ -1067,7 +1087,16 @@ def _merge_documents(docs: Iterable[Document]) -> Document:
 
 
 def _looks_like_n3_rules(text: str) -> bool:
-    return '=>' in text or '<=' in text or 'log:query' in text or '<http://www.w3.org/2000/10/swap/log#query>' in text
+    try:
+        tokens = lex(str(text or ""))
+    except N3SyntaxError:
+        return True
+    return any(
+        token.typ in {"=>", "<="}
+        or (token.typ == "IDENT" and token.value == "log:query")
+        or (token.typ == "IRI" and token.value == LOG_QUERY)
+        for token in tokens
+    )
 
 
 def _parse_source_auto(text: str, options: Mapping[str, Any] | None = None, *, base_iri: str | None = None) -> Document:
@@ -1248,8 +1277,8 @@ def reason(
         value = [
             {"_type": "PrefixEnv", "map": doc.prefixes.map, "baseIri": doc.prefixes.base_iri},
             [triple_to_primitive(t) for t in doc.triples],
-            [{"premise": [triple_to_primitive(t) for t in r.premise], "conclusion": [triple_to_primitive(t) for t in r.conclusion], "isForward": r.is_forward} for r in doc.forward_rules],
-            [{"premise": [triple_to_primitive(t) for t in r.premise], "conclusion": [triple_to_primitive(t) for t in r.conclusion], "isForward": r.is_forward} for r in doc.backward_rules],
+            [rule_to_primitive(r) for r in doc.forward_rules],
+            [rule_to_primitive(r) for r in doc.backward_rules],
         ]
         return json.dumps(value, indent=2, sort_keys=True)
     return reason_stream(

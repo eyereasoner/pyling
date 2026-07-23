@@ -172,7 +172,20 @@ def lex(text: str) -> list[Token]:
                 continue
         # identifier / prefixed name / keyword / blank node label
         j = i
-        while j < n and text[j] not in _IDENT_STOP:
+        while j < n:
+            if text[j] in _IDENT_STOP:
+                # A dot may occur inside the local part of a prefixed name,
+                # but not as its final character.
+                if (
+                    text[j] == "."
+                    and ":" in text[i:j]
+                    and j + 1 < n
+                    and not text[j + 1].isspace()
+                    and text[j + 1] not in "{}[]();,.()=!^|"
+                ):
+                    j += 1
+                    continue
+                break
             # stop at => <= <- starts, at comment marker after whitespace already handled
             if text.startswith("=>", j) or text.startswith("<=", j) or text.startswith("<-", j) or text.startswith("^^", j):
                 break
@@ -338,16 +351,16 @@ class Parser:
         return normal, None, qrule
 
     def _make_rule(self, first: Term, second: Term, is_forward: bool) -> Rule:
-        if isinstance(second, Literal) and second.datatype == XSD_NS + "boolean" and second.lexical in {"true", "1"}:
-            if not isinstance(first, GraphTerm):
-                raise N3SyntaxError("rule head must be a formula", self.peek().pos)
-            return Rule([], first.triples, True) if is_forward else Rule(first.triples, [], False)
-        if isinstance(second, Literal) and second.datatype == XSD_NS + "boolean" and second.lexical in {"false", "0"}:
-            if not isinstance(first, GraphTerm):
-                raise N3SyntaxError("rule premise must be a formula", self.peek().pos)
-            return Rule(first.triples, [], is_forward, True)
-        if not isinstance(first, GraphTerm) or not isinstance(second, GraphTerm):
-            raise N3SyntaxError("rules require formula terms on both sides", self.peek().pos)
+        true_literal = lambda term: (
+            isinstance(term, Literal)
+            and term.datatype == XSD_NS + "boolean"
+            and term.lexical in {"true", "1"}
+        )
+        false_literal = lambda term: (
+            isinstance(term, Literal)
+            and term.datatype == XSD_NS + "boolean"
+            and term.lexical in {"false", "0"}
+        )
         # Blank nodes in an antecedent formula are existential variables. They
         # share scope by label within that antecedent, unlike top-level blank
         # nodes and existential blank nodes in a rule conclusion.
@@ -365,8 +378,37 @@ class Parser:
                 )
             return term
 
-        premise = [Triple(antecedent_term(tr.s), antecedent_term(tr.p), antecedent_term(tr.o)) for tr in first.triples]
-        return Rule(premise, second.triples, is_forward)
+        def antecedent_triples(graph: GraphTerm) -> list[Triple]:
+            return [
+                Triple(antecedent_term(tr.s), antecedent_term(tr.p), antecedent_term(tr.o))
+                for tr in graph.triples
+            ]
+
+        if is_forward and false_literal(second):
+            if not isinstance(first, GraphTerm):
+                raise N3SyntaxError("rule premise must be a formula", self.peek().pos)
+            return Rule(antecedent_triples(first), (), True, True)
+
+        if is_forward:
+            if not isinstance(first, GraphTerm) and not true_literal(first):
+                raise N3SyntaxError("rule premise must be a formula or true", self.peek().pos)
+            premise = antecedent_triples(first) if isinstance(first, GraphTerm) else ()
+            if isinstance(second, GraphTerm):
+                conclusion = second.triples
+                dynamic = None
+            elif true_literal(second):
+                conclusion = ()
+                dynamic = None
+            else:
+                conclusion = ()
+                dynamic = second
+            return Rule(premise, conclusion, True, False, dynamic)
+
+        if not isinstance(first, GraphTerm) or not (isinstance(second, GraphTerm) or true_literal(second)):
+            raise N3SyntaxError("rules require formula terms on both sides", self.peek().pos)
+        head = antecedent_triples(first)
+        body = second.triples if isinstance(second, GraphTerm) else ()
+        return Rule(head, body, False)
 
     def parse_predicate_object_list(self, subject: Term) -> list[Triple]:
         triples: list[Triple] = []
@@ -515,6 +557,14 @@ class Parser:
                     if self.match("EOF"):
                         raise N3SyntaxError("unterminated formula", self.peek().pos)
                     if self.parse_directive():
+                        continue
+                    if (
+                        self.match("IDENT")
+                        and self.peek().value.lower() == "true"
+                        and (self.peek(1).typ == "." or self.peek(1).typ == "}")
+                    ):
+                        self.pop()
+                        self.accept(".")
                         continue
                     st_triples, _rule, _query = self.parse_statement(in_graph=True)
                     triples.extend(st_triples)

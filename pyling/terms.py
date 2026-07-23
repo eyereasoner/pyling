@@ -151,12 +151,21 @@ class Rule:
     conclusion: Tuple[Triple, ...]
     is_forward: bool = True
     is_fuse: bool = False
+    dynamic_conclusion: Term | None = None
 
-    def __init__(self, premise: Iterable[Triple], conclusion: Iterable[Triple] = (), is_forward: bool = True, is_fuse: bool = False):  # type: ignore[override]
+    def __init__(
+        self,
+        premise: Iterable[Triple],
+        conclusion: Iterable[Triple] = (),
+        is_forward: bool = True,
+        is_fuse: bool = False,
+        dynamic_conclusion: Term | None = None,
+    ):  # type: ignore[override]
         object.__setattr__(self, "premise", tuple(premise))
         object.__setattr__(self, "conclusion", tuple(conclusion))
         object.__setattr__(self, "is_forward", bool(is_forward))
         object.__setattr__(self, "is_fuse", bool(is_fuse))
+        object.__setattr__(self, "dynamic_conclusion", dynamic_conclusion)
 
 
 @dataclass(slots=True)
@@ -379,13 +388,16 @@ def triple_to_primitive(tr: Triple) -> dict[str, Any]:
 
 
 def rule_to_primitive(rule: Rule) -> dict[str, Any]:
-    return {
+    result = {
         "_type": "Rule",
         "premise": [triple_to_primitive(t) for t in rule.premise],
         "conclusion": [triple_to_primitive(t) for t in rule.conclusion],
         "isForward": rule.is_forward,
         "isFuse": rule.is_fuse,
     }
+    if rule.dynamic_conclusion is not None:
+        result["dynamicConclusion"] = term_to_primitive(rule.dynamic_conclusion)
+    return result
 
 
 def term_from_primitive(obj: Any) -> Term:
@@ -445,5 +457,12 @@ def rule_from_primitive(obj: Any) -> Rule:
         premise = obj.get("premise") or obj.get("body") or []
         conclusion = obj.get("conclusion") or obj.get("head") or []
         is_forward = obj.get("isForward", obj.get("is_forward", True))
-        return Rule((triple_from_primitive(t) for t in premise), (triple_from_primitive(t) for t in conclusion), bool(is_forward), bool(obj.get("isFuse", obj.get("is_fuse", False))))
+        dynamic = obj.get("dynamicConclusion", obj.get("dynamic_conclusion"))
+        return Rule(
+            (triple_from_primitive(t) for t in premise),
+            (triple_from_primitive(t) for t in conclusion),
+            bool(is_forward),
+            bool(obj.get("isFuse", obj.get("is_fuse", False))),
+            term_from_primitive(dynamic) if dynamic is not None else None,
+        )
     raise TypeError(f"cannot convert object to Eyeling rule: {obj!r}")
