@@ -172,13 +172,18 @@ The main exported term classes are `Iri`, `Literal`, `Var`, `Blank`, `ListTerm`,
 
 Publishable notebooks live in `docs/notebooks/`:
 
-- `01-rdflib-reasoning.ipynb` shows RDFLib graph input and RDFLib graph output.
-- `02-owl-style-rules.ipynb` loads and runs the complete OWL 2 RL/RDF N3
-  profile maintained for Eyeling.
-- `03-neuro-symbolic-validation.ipynb` shows symbolic validation over facts
-  extracted by a neural model.
-- `04-qudt-message-log.ipynb` automatically normalizes logarithmic QUDT
-  measurements from an RDF Message log.
+- [RDFLib graphs with pyling](docs/notebooks/01-rdflib-reasoning.ipynb) shows
+  RDFLib graph input and RDFLib graph output.
+- [OWL 2 RL materialization](docs/notebooks/02-owl-style-rules.ipynb) loads and
+  runs the complete OWL 2 RL/RDF N3 profile maintained for Eyeling.
+- [Neuro-symbolic validation](docs/notebooks/03-neuro-symbolic-validation.ipynb)
+  applies symbolic review policy to facts extracted by a neural model.
+- [QUDT over an RDF Message log](docs/notebooks/04-qudt-message-log.ipynb)
+  automatically normalizes logarithmic measurements in independently scoped
+  messages.
+- [ODRL FORCE compliance](docs/notebooks/05-odrl-force-compliance.ipynb)
+  evaluates the ODRL Test Suite's complex weekday office-hours policy and
+  produces an auditable compliance report.
 
 Run them locally with:
 

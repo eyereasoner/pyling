@@ -65,6 +65,7 @@ jobs:
               <li><a href="notebooks/02-owl-style-rules.html">OWL 2 RL materialization with the Eyeling ruleset</a></li>
               <li><a href="notebooks/03-neuro-symbolic-validation.html">Neuro-symbolic validation over extracted knowledge</a></li>
               <li><a href="notebooks/04-qudt-message-log.html">Automatic QUDT conversion over an RDF Message log</a></li>
+              <li><a href="notebooks/05-odrl-force-compliance.html">ODRL FORCE compliance evaluation</a></li>
             </ul>
           </body>
           </html>

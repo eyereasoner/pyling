@@ -15,13 +15,15 @@ The shared example benchmarks were rerun locally on 2026-07-23.
 
 - Eyeling's own runner passed all 224 runnable examples against their golden
   outputs.
-- In the current pyling/Eyeling survey, both returned normally on 211 examples
-  and reported matching fact and derived-fact counts on 142 of them.
+- In the current compatibility survey, pyling returned normally on 223 of 224
+  examples. The only nonzero exit was the intentional `fuse.n3` assertion.
+- Pyling and Eyeling both returned normally on 222 examples and reported
+  matching derived-fact counts on 157 of them, up from 142 before this work.
 - All 20 pyling syntax errors recorded by the earlier survey have been
   eliminated. Nine were still reproducible before the fixes described below;
   the other 11 had already been fixed by RDF/TriG compatibility work.
-- pyling and Eyeling completed all four examples and reported identical fact
-  and derived-fact counts.
+- The formerly incomplete Goldbach and path-discovery examples now match
+  Eyeling at 667 and 3 derived facts, respectively.
 - FuXi completed two of the three attempted examples as a process, but reported
   no derived facts for either. It failed to load the Fibonacci example.
 - The saved 273-case MobiBench run completed every pyling and FuXi invocation,
@@ -30,8 +32,12 @@ The shared example benchmarks were rerun locally on 2026-07-23.
 
 Therefore, the answer to "did the test run successfully?" is:
 
-- **Yes for pyling versus Eyeling on the shared examples:** both execution and
-  the reported output counts agree.
+- **Yes for pyling versus Eyeling on the four shared focused examples:** both
+  execution and the reported output counts agree.
+- **Yes for execution of the complete Eyeling example corpus:** every example
+  either returns normally or produces its intentional inference-fuse exit.
+  Exact derived-count parity currently holds for 157 of the 222 jointly normal
+  cases; the other 65 remain broader semantic-parity work.
 - **No for a like-for-like FuXi comparison on those examples:** FuXi either did
   different work or rejected the input.
 - **Yes for process completion on the recorded MobiBench run, but not proven
@@ -56,29 +62,31 @@ npm run test:examples
 All 224 examples passed in 25.70 seconds. That is the semantic baseline and
 includes the expected inference-fuse exits from `fuse.n3` and `liar.n3`.
 
-The suite was rerun for pyling and Eyeling after investigating the unsupported
-cases, using one measured iteration per case, no warmup, and a 10-second
-timeout. The FuXi row is retained from the earlier three-reasoner survey:
+After the compatibility fixes, pyling was rerun with one measured iteration,
+no warmup, and a 25-second timeout. Eyeling's counts come from the same-date
+full survey described below. The FuXi row is retained from the earlier
+three-reasoner survey:
 
 | Reasoner | Normal returns | Other outcomes | Cases reporting derived facts |
 |---|---:|---|---:|
 | Eyeling | 222 | 2 expected inference-fuse exits | 209 |
-| pyling | 212 | 7 fuse exits, 5 timeouts | 169 |
+| pyling | 223 | 1 expected inference-fuse exit | 187 |
 | FuXi | 165 | 35 loader errors, 22 syntax errors, 2 timeouts | 0 |
 
-Only `fuse.n3` explicitly expected one of pyling's seven fuse exits. The other
-six indicate semantic differences in built-ins or rule evaluation. Conversely,
-pyling returned normally for `liar.n3`, where the Eyeling golden test expects a
-fuse. A normal return should therefore not be read as a passed example.
+`fuse.n3` is the sole pyling nonzero exit and is intentional. Pyling still
+returns normally for `liar.n3`, where Eyeling expects a fuse, so process
+completion alone should not be read as a passed golden-output test.
 
 FuXi reported zero derived facts in every normally returning case. Its timings
 do not represent the same work as Eyeling and pyling, so there is no valid
 three-way speed ranking from this suite.
 
-pyling and Eyeling both returned normally with matching fact and derived-fact
-counts in 142 cases. After excluding `queens.n3`, which uses an Eyeling-only
-JavaScript built-in but happens to have matching top-level counts, 141 cases
-remain as the most defensible timing cohort:
+The earlier survey identified 142 cases with matching fact and derived-fact
+counts. After excluding `queens.n3`, which uses an Eyeling-only JavaScript
+built-in but happens to have matching top-level counts, 141 cases formed the
+historical timing cohort below. The current implementation increases exact
+derived-count parity to 157 cases, but those cases were not rerun as a
+multi-iteration timing cohort, so the older timing statistics are retained:
 
 | Comparison over 141 cases | Result |
 |---|---:|
@@ -89,17 +97,21 @@ remain as the most defensible timing cohort:
 | Median per-case pyling/Eyeling ratio | 0.474 |
 
 The median per-case ratio means pyling was about 2.11 times faster for the
-typical case in this cohort. Most examples are small, however. Several larger
-or recursive examples favor Eyeling:
+typical case in this historical cohort. Most examples are small, however.
+The verified one-iteration survey shows that several larger or recursive
+examples favor Eyeling:
 
 | Example | pyling | Eyeling | Faster engine |
 |---|---:|---:|---|
-| Socrates | 0.53 ms | 4.80 ms | pyling, 9.1x |
-| Fibonacci | 2,597.37 ms | 1,451.61 ms | Eyeling, 1.79x |
-| Deep taxonomy, 10,000 levels | 1,318.27 ms | 301.37 ms | Eyeling, 4.37x |
-| Transitive closure | 3,871.33 ms | 413.03 ms | Eyeling, 9.37x |
-| EV roundtrip planner | 2,183.09 ms | 56.93 ms | Eyeling, 38.35x |
-| Deep taxonomy, 100,000 levels | timeout | 2,436.58 ms | not directly comparable |
+| Socrates | 0.60 ms | 4.80 ms | pyling, 8.0x |
+| Fibonacci | 2,865.25 ms | 1,451.61 ms | Eyeling, 1.97x |
+| Deep taxonomy, 10,000 levels | 1,251.57 ms | 301.37 ms | Eyeling, 4.15x |
+| Transitive closure | 3,193.68 ms | 413.03 ms | Eyeling, 7.73x |
+| EV roundtrip planner | 107.73 ms | 56.93 ms | Eyeling, 1.89x |
+| Deep taxonomy, 100,000 levels | 13,807.60 ms | 2,436.58 ms | Eyeling, 5.67x |
+| Collatz, 1,000 inputs | 13,511.35 ms | 565.94 ms | Eyeling, 23.87x |
+| Goldbach through 1,000 | 18,643.40 ms | 1,414.40 ms | Eyeling, 13.18x |
+| Path discovery | 12,972.20 ms | 868.14 ms | Eyeling, 14.94x |
 
 Matching counts are weaker than comparing normalized complete output. These
 141 rows are useful performance evidence, not a claim that pyling passed 141
@@ -117,19 +129,24 @@ as follows:
 | `rdf-dataset`, `triple-terms` | RDF 1.2 TriG sidecars were parsed in RDF 1.1 mode | Benchmark now enables `rdf12` for RDF sidecars | Match |
 | `derived-backward-rule-2` | `true` bodies and rules derived from quoted formulas were not activated | Empty-body normalization and derived-rule registration | Match |
 | `quoted-head-unquote`, `quoted-head-unquote-select` | A variable resolving to a quoted formula was rejected as a rule head | Dynamic quoted-formula heads | Match |
-| `digital-product-passport`, `goldbach-1000` | `{ true. }` and `{ true }` were rejected | Empty quoted-formula syntax | Match for Digital Product Passport; Goldbach still incomplete |
-| `path-discovery` | Interior dots in prefixed-name local parts were tokenized as statement terminators | PN_LOCAL interior-dot support | Still incomplete |
+| `digital-product-passport`, `goldbach-1000` | `{ true. }` and `{ true }` were rejected | Empty quoted-formula syntax | Match |
+| `path-discovery` | Interior dots in prefixed-name local parts were tokenized as statement terminators | PN_LOCAL interior-dot support | Match |
 
-`goldbach-1000` and `path-discovery` now parse and return normally, but pyling
-reports fewer derived facts than Eyeling (0 versus 667, and 0 versus 3,
-respectively). They remain semantic compatibility work, not valid performance
-comparisons. Goldbach depends on Eyeling's deferred-builtin proof search to
-enumerate a recursive backward range before running arithmetic; pyling's
-current goal ordering does not reproduce that enumeration. Path discovery has
-the same broader shape: a recursive backward `:route` proof feeds a scoped
-`log:collectAllIn` aggregate, but pyling currently produces no aggregate
-binding. The remaining non-normal pyling outcomes are seven fuse exits and five
-10-second timeouts; none is a parser failure.
+The follow-up work also removed the remaining execution and semantic gaps:
+
+| Cases | Cause | Fix | Result |
+|---|---|---|---|
+| `calidor`, `delfour`, `flandor`, `medior` | Hashes used decoded strings instead of Eyeling's escaped literal lexical form | Eyeling-compatible literal hashing | Normal exits |
+| `complex-matrix-stability`, `fundamental-theorem-arithmetic` | Proof depth counted sequential conjuncts and fuses ran before closure | Iterative proof stack and post-fixpoint fuse evaluation | Matching checks/counts |
+| `pillar`, `similar` | Mutually recursive backward goals had no ancestor-cycle handling | Eyeling-style cycle guard and variable-predicate fact lookup | Normal exits |
+| `goldbach-1000` | Constructive arithmetic ran after an unbound recursive range goal | Bound-input builtin prioritization and compact proof answers | 667 derived facts, matching Eyeling |
+| `path-discovery`, `gray-code-counter` | `list:firstRest` could decompose but not construct open lists | Bidirectional `firstRest` and open-list substitution | 3 and 1 derived facts, matching Eyeling |
+| `ev-roundtrip-planner` | `() list:rest ()` incorrectly succeeded, defeating the fuel bound | Require a non-empty list for `list:rest` | 8 plans, matching Eyeling |
+| `collatz-1000` | Adding each result invalidated memoized suffixes during the same proof | Prove each rule against a stable fact snapshot | 1,000 trajectories, matching Eyeling |
+| `kaprekar-6174`, `takeuchi`, `deep-taxonomy-100000` | Recursive traversal and broad literal lookups exceeded the old timeout | Iterative DFS, answer projection, and normalized literal indexes | Normal exits |
+
+With a 25-second per-case budget, no unsupported or timed-out pyling example
+remains. The one non-normal outcome is the expected `fuse.n3` exit.
 
 ## pyling versus Eyeling
 
