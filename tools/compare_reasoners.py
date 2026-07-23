@@ -48,6 +48,7 @@ class BenchmarkCase:
     rdf: bool = False
     input_format: str | None = None
     suite: str = "examples"
+    eyeling_builtin_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -113,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", action="store_true", help="list discovered cases and reasoners")
-    parser.add_argument("--suite", action="append", default=[], help="suite to include: examples, owl-mobibench, or all")
+    parser.add_argument("--suite", action="append", default=[], help="suite to include: examples, eyeling-examples, owl-mobibench, or all")
     parser.add_argument("--case", action="append", default=[], help="case id to run; repeat or comma-separate")
     parser.add_argument("--fixture", action="append", default=[], help="extra fixture path or id=path")
     parser.add_argument("--mobibench-limit", type=int, default=int(os.environ.get("MOBIBENCH_LIMIT", "5")), help="maximum MobiBench OWL2RL cases to load; 0 means all")
@@ -146,11 +147,13 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 def discover_cases(args: argparse.Namespace) -> list[BenchmarkCase]:
     suites = split_requested(args.suite) or {"examples"}
     if "all" in suites:
-        suites = {"examples", "owl-mobibench"}
+        suites = {"examples", "eyeling-examples", "owl-mobibench"}
 
     cases: list[BenchmarkCase] = []
     if "examples" in suites:
         cases.extend(discover_example_cases())
+    if "eyeling-examples" in suites:
+        cases.extend(discover_eyeling_example_cases(args))
     if "owl-mobibench" in suites:
         cases.extend(discover_mobibench_cases(args))
     for raw in args.fixture:
@@ -170,6 +173,33 @@ def discover_example_cases() -> list[BenchmarkCase]:
     cases: list[BenchmarkCase] = []
     for path in sorted((ROOT / "examples").glob("*.n3")):
         cases.append(BenchmarkCase(path.stem, path.stem.replace("-", " "), (path.read_text(encoding="utf8"),), (path,)))
+    return cases
+
+
+def discover_eyeling_example_cases(args: argparse.Namespace) -> list[BenchmarkCase]:
+    examples_dir = Path(args.eyeling_path).resolve() / "examples"
+    if not examples_dir.is_dir():
+        raise SystemExit(f"Eyeling examples directory does not exist: {examples_dir}")
+    cases: list[BenchmarkCase] = []
+    for path in sorted(examples_dir.glob("*.n3")):
+        trig_path = examples_dir / "input" / f"{path.stem}.trig"
+        builtin_path = examples_dir / "builtin" / f"{path.stem}.js"
+        source_paths = [path]
+        sources = [path.read_text(encoding="utf8")]
+        if trig_path.exists():
+            source_paths.append(trig_path)
+            sources.append(trig_path.read_text(encoding="utf8"))
+        cases.append(
+            BenchmarkCase(
+                f"eyeling-{path.stem}",
+                path.stem.replace("-", " "),
+                tuple(sources),
+                tuple(source_paths),
+                rdf=trig_path.exists(),
+                suite="eyeling-examples",
+                eyeling_builtin_path=builtin_path if builtin_path.exists() else None,
+            )
+        )
     return cases
 
 
@@ -467,6 +497,9 @@ def run_install_command(command: list[str], timeout: float) -> None:
 
 
 def run_pyling_once(case: BenchmarkCase, args: argparse.Namespace) -> Sample:
+    if case.suite == "eyeling-examples":
+        return run_pyling_subprocess_once(case, args)
+
     from pyling import reason_stream
 
     input_data: Any = {"sources": list(case.sources)} if len(case.sources) > 1 else case.sources[0]
@@ -485,6 +518,73 @@ def run_pyling_once(case: BenchmarkCase, args: argparse.Namespace) -> Sample:
         derived=len(result.derived),
         closure_chars=len(result.closure_n3),
     )
+
+
+def run_pyling_subprocess_once(case: BenchmarkCase, args: argparse.Namespace) -> Sample:
+    payload = {
+        "sources": list(case.sources),
+        "rdf": case.rdf,
+        "input_format": case.input_format,
+        "include_input_facts": args.include_input_facts,
+        "max_iterations": args.max_iterations,
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf8", delete=False) as temp:
+        json.dump(payload, temp)
+        temp_path = temp.name
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", PYLING_RUNNER, temp_path],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=args.timeout,
+            cwd=ROOT,
+        )
+    finally:
+        try:
+            Path(temp_path).unlink()
+        except OSError:
+            pass
+    if proc.returncode != 0:
+        raise RuntimeError(one_line(proc.stderr or proc.stdout or f"pyling exited {proc.returncode}"))
+    try:
+        result = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"pyling returned non-JSON output: {one_line(proc.stdout)}") from exc
+    return Sample(
+        total_ms=float(result["total_ms"]),
+        facts=result.get("facts"),
+        derived=result.get("derived"),
+        closure_chars=result.get("closure_chars"),
+    )
+
+
+PYLING_RUNNER = r"""
+import json
+import sys
+import time
+from pathlib import Path
+
+from pyling import reason_stream
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf8"))
+input_data = {"sources": payload["sources"]} if len(payload["sources"]) > 1 else payload["sources"][0]
+start = time.perf_counter()
+result = reason_stream(
+    input_data,
+    rdf=payload["rdf"],
+    input_format=payload["input_format"],
+    include_input_facts_in_closure=payload["include_input_facts"],
+    max_iterations=payload["max_iterations"],
+)
+elapsed = (time.perf_counter() - start) * 1000
+print(json.dumps({
+    "total_ms": elapsed,
+    "facts": len(result.facts),
+    "derived": len(result.derived),
+    "closure_chars": len(result.closure_n3),
+}))
+"""
 
 
 def run_fuxi_once(case: BenchmarkCase, args: argparse.Namespace) -> Sample:
@@ -525,7 +625,14 @@ def run_fuxi_once(case: BenchmarkCase, args: argparse.Namespace) -> Sample:
 def run_eyeling_once(case: BenchmarkCase, args: argparse.Namespace) -> Sample:
     package_path = Path(args.eyeling_path).resolve()
     with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf8", delete=False) as temp:
-        json.dump({"sources": list(case.sources)}, temp)
+        json.dump(
+            {
+                "sources": list(case.sources),
+                "rdf": case.rdf,
+                "builtin_path": str(case.eyeling_builtin_path) if case.eyeling_builtin_path else None,
+            },
+            temp,
+        )
         temp_path = temp.name
     try:
         proc = subprocess.run(
@@ -562,7 +669,10 @@ const eyeling = require(process.argv[1]);
 const input = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const source = input.sources.length === 1 ? input.sources[0] : input;
 const start = performance.now();
-const result = eyeling.reasonStream(source);
+const result = eyeling.reasonStream(source, {
+  rdf: input.rdf,
+  builtinModules: input.builtin_path ? [input.builtin_path] : null,
+});
 const elapsed = performance.now() - start;
 process.stdout.write(JSON.stringify({
   total_ms: elapsed,

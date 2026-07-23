@@ -13,6 +13,10 @@ conformance assertion was checked.
 
 The shared example benchmarks were rerun locally on 2026-07-23.
 
+- Eyeling's own runner passed all 224 runnable examples against their golden
+  outputs.
+- In the full three-reasoner survey, pyling and Eyeling returned normally with
+  matching fact counts on 125 examples; FuXi never reported a derived fact.
 - pyling and Eyeling completed all four examples and reported identical fact
   and derived-fact counts.
 - FuXi completed two of the three attempted examples as a process, but reported
@@ -30,10 +34,76 @@ Therefore, the answer to "did the test run successfully?" is:
 - **Yes for process completion on the recorded MobiBench run, but not proven
   for semantic correctness:** no expected entailments were asserted.
 
+## Full Eyeling example suite
+
+Eyeling 2.35.1 contains 224 runnable files directly under `examples/`. The
+additional `.n3` files under `examples/output/` and `examples/proof/` are golden
+results, not additional programs, and were not benchmarked as inputs. The run
+included all 20 matching TriG sidecars and loaded both JavaScript custom
+built-ins for Eyeling. pyling and FuXi have no adapter for those JavaScript
+modules.
+
+First, Eyeling's own golden-output test was run:
+
+```bash
+cd ../eyeling
+npm run test:examples
+```
+
+All 224 examples passed in 25.70 seconds. That is the semantic baseline and
+includes the expected inference-fuse exits from `fuse.n3` and `liar.n3`.
+
+The three-reasoner survey then ran one measured iteration per case, with no
+warmup and a 10-second timeout:
+
+| Reasoner | Normal returns | Other outcomes | Cases reporting derived facts |
+|---|---:|---|---:|
+| Eyeling | 222 | 2 expected inference-fuse exits | 209 |
+| pyling | 192 | 20 syntax errors, 7 fuse exits, 5 timeouts | 153 |
+| FuXi | 165 | 35 loader errors, 22 syntax errors, 2 timeouts | 0 |
+
+Only `fuse.n3` explicitly expected one of pyling's seven fuse exits. Conversely,
+pyling returned normally for `liar.n3`, where the Eyeling golden test expects a
+fuse. A normal return should therefore not be read as a passed example.
+
+FuXi reported zero derived facts in every normally returning case. Its timings
+do not represent the same work as Eyeling and pyling, so there is no valid
+three-way speed ranking from this suite.
+
+pyling and Eyeling both returned normally with matching fact and derived-fact
+counts in 125 cases. After excluding `queens.n3`, which uses an Eyeling-only
+JavaScript built-in but happens to have matching top-level counts, 124 cases
+remain as the most defensible timing cohort:
+
+| Comparison over 124 cases | Result |
+|---|---:|
+| Cases where pyling was faster | 94 |
+| Cases where Eyeling was faster | 30 |
+| Median pyling time | 6.27 ms |
+| Median Eyeling time | 17.64 ms |
+| Median per-case pyling/Eyeling ratio | 0.446 |
+
+The median per-case ratio means pyling was about 2.24 times faster for the
+typical case in this cohort. Most examples are small, however. Several larger
+or recursive examples favor Eyeling:
+
+| Example | pyling | Eyeling | Faster engine |
+|---|---:|---:|---|
+| Socrates | 0.53 ms | 4.80 ms | pyling, 9.1x |
+| Fibonacci | 2,597.37 ms | 1,451.61 ms | Eyeling, 1.79x |
+| Deep taxonomy, 10,000 levels | 1,318.27 ms | 301.37 ms | Eyeling, 4.37x |
+| Transitive closure | 3,871.33 ms | 413.03 ms | Eyeling, 9.37x |
+| EV roundtrip planner | 2,183.09 ms | 56.93 ms | Eyeling, 38.35x |
+| Deep taxonomy, 100,000 levels | timeout | 2,436.58 ms | not directly comparable |
+
+Matching counts are weaker than comparing normalized complete output. These
+124 rows are useful performance evidence, not a claim that pyling passed 124
+of Eyeling's golden tests.
+
 ## pyling versus Eyeling
 
-These are median engine times. Three measured iterations followed one warmup
-iteration. Lower is better.
+The earlier focused run below uses three measured iterations after one warmup,
+making it less broad but less sensitive to a single sample. Lower is better.
 
 | Example | pyling | Eyeling | pyling relative to Eyeling | Output check |
 |---|---:|---:|---:|---|
@@ -108,9 +178,11 @@ The local comparison used:
 
 The timer covers parsing, reasoning, and closure construction. Runtime process
 startup and initial module loading occur before the timed region. Eyeling and
-FuXi run in fresh subprocesses for each sample; pyling runs in the benchmark
-process. These measurements are suitable for project regression tracking, not
-as universal cross-language performance claims.
+FuXi run in fresh subprocesses for each sample. pyling runs in-process for the
+focused and MobiBench suites, but in a timed subprocess for the full Eyeling
+suite so individual cases cannot stall the survey. These measurements are
+suitable for project regression tracking, not as universal cross-language
+performance claims.
 
 Reproduce the shared examples with sibling checkouts:
 
@@ -151,6 +223,12 @@ Run the OWL profile separately:
 
 ```bash
 npm run perf:mobibench
+```
+
+Reproduce the full Eyeling example survey:
+
+```bash
+EYELING_PATH=../eyeling npm run perf:eyeling-examples
 ```
 
 Generated JSON, CSV, and Markdown reports are written under

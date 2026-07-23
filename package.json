@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "perf": "sh -c 'if [ -x .venv/bin/python ]; then exec .venv/bin/python tools/compare_reasoners.py \"$@\"; else exec python3 tools/compare_reasoners.py \"$@\"; fi' --",
+    "perf:eyeling-examples": "npm run perf -- --suite=eyeling-examples --reasoner=pyling,eyeling,fuxi --iterations=1 --warmup=0 --max-iterations=100000 --timeout=10 --allow-failures --require-reasoner=pyling --require-reasoner=eyeling --require-reasoner=fuxi --report-dir=performance-reports/eyeling-examples --markdown",
     "perf:mobibench": "npm run perf -- --suite=owl-mobibench --mobibench-limit=0 --reasoner=pyling,fuxi --iterations=1 --warmup=0 --max-iterations=100 --timeout=600 --allow-failures --require-reasoner=fuxi --report-dir=performance-reports/owl-mobibench --markdown",
     "spec": "npm run spec-rdf12",
     "spec-rdf12": "npm run spec-rdf12-ntriples && npm run spec-rdf12-nquads && npm run spec-rdf12-turtle && npm run spec-rdf12-trig",

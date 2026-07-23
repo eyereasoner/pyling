@@ -261,6 +261,7 @@ reproduction commands.
 ```bash
 npm run perf -- --list
 npm run perf -- --case=socrates --reasoner=pyling,eyeling,fuxi
+EYELING_PATH=../eyeling npm run perf:eyeling-examples
 ```
 
 ## RDF Message Logs

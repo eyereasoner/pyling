@@ -50,12 +50,31 @@ jobs:
           --report-dir=performance-reports/examples
           --markdown
 
+      - name: Run Eyeling examples comparison
+        run: >
+          python tools/compare_reasoners.py
+          --suite=eyeling-examples
+          --reasoner=pyling,eyeling,fuxi
+          --eyeling-path=.cache/eyeling
+          --iterations=1
+          --warmup=0
+          --max-iterations=100000
+          --timeout=10
+          --allow-failures
+          --require-reasoner=pyling
+          --require-reasoner=eyeling
+          --require-reasoner=fuxi
+          --report-dir=performance-reports/eyeling-examples
+          --markdown
+
       - name: Write job summary
         if: always()
         run: |
           {
             echo "## Examples"
             cat performance-reports/examples/report.md || true
+            echo "## Eyeling examples"
+            cat performance-reports/eyeling-examples/report.md || true
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload performance reports
