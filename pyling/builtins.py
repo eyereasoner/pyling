@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 import uuid
@@ -29,6 +30,7 @@ from .terms import (
     Iri,
     ListTerm,
     Literal,
+    OpenListTerm,
     Term,
     Triple,
     Var,
@@ -371,7 +373,7 @@ def _list_first(ctx: BuiltinContext) -> list[Subst]:
 
 def _list_rest(ctx: BuiltinContext) -> list[Subst]:
     elems = _list_elems(ctx, ctx.goal.s)
-    if elems is None:
+    if not elems:
         return []
     return _bind_list_or_test(ctx, ctx.goal.o, elems[1:])
 
@@ -724,7 +726,8 @@ def _log_not_includes(ctx: BuiltinContext) -> list[Subst]:
         # any non-formula scope (unbound variable, blank node placeholder,
         # or dummy ground term) searches everywhere, not just a literal
         # match against the scope term itself.
-        return [] if any(ctx.engine.solve(list(pattern.triples), ctx.subst)) else [ctx.subst]  # type: ignore[attr-defined]
+        solutions = ctx.engine.solve(list(pattern.triples), ctx.subst)  # type: ignore[attr-defined]
+        return [] if next(solutions, None) is not None else [ctx.subst]
     return [] if _log_includes(ctx) else [ctx.subst]
 
 
@@ -1065,7 +1068,22 @@ def _list_not_member(ctx: BuiltinContext) -> list[Subst]:
 def _list_first_rest(ctx: BuiltinContext) -> list[Subst]:
     elems = _list_elems(ctx, ctx.goal.s)
     pair = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
-    if elems is None or not isinstance(pair, ListTerm) or len(pair.elems) != 2 or not elems:
+    if not isinstance(pair, ListTerm) or len(pair.elems) != 2:
+        return []
+    if elems is None:
+        rest = pair.elems[1]
+        if isinstance(rest, ListTerm):
+            return _bind_or_test(ctx, ctx.goal.s, ListTerm((pair.elems[0], *rest.elems)))
+        if isinstance(rest, OpenListTerm):
+            return _bind_or_test(
+                ctx,
+                ctx.goal.s,
+                OpenListTerm((pair.elems[0], *rest.prefix), rest.tail_var),
+            )
+        if isinstance(rest, Var):
+            return _bind_or_test(ctx, ctx.goal.s, OpenListTerm((pair.elems[0],), rest.name))
+        return []
+    if not elems:
         return []
     nxt = ctx.unify_term(pair.elems[0], elems[0], ctx.subst)
     if nxt is None:
@@ -1143,9 +1161,12 @@ def _string_scrape(ctx: BuiltinContext) -> list[Subst]:
 
 def _crypto_hash(name: str) -> BuiltinHandler:
     def handler(ctx: BuiltinContext) -> list[Subst]:
-        s = _term_str(ctx.engine.apply_subst(ctx.goal.s, ctx.subst))  # type: ignore[attr-defined]
-        if s is None:
+        term = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
+        if not isinstance(term, Literal):
             return []
+        # Match Eyeling's N3 literal representation: hash escaped lexical
+        # content, excluding the surrounding quotes.
+        s = json.dumps(term.lexical, ensure_ascii=False)[1:-1]
         h = hashlib.new(name)
         h.update(s.encode("utf8"))
         return _bind_or_test(ctx, ctx.goal.o, Literal(h.hexdigest(), XSD_NS + "string"))
@@ -1256,7 +1277,7 @@ def _log_for_all_in(ctx: BuiltinContext) -> list[Subst]:
     if not isinstance(generator, GraphTerm) or not isinstance(condition, GraphTerm):
         return []
     for solution in ctx.engine.solve(list(generator.triples), dict(ctx.subst)):  # type: ignore[attr-defined]
-        if not any(ctx.engine.solve(list(condition.triples), solution)):  # type: ignore[attr-defined]
+        if next(ctx.engine.solve(list(condition.triples), solution), None) is None:  # type: ignore[attr-defined]
             return []
     return [ctx.subst]
 

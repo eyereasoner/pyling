@@ -36,6 +36,7 @@ from .terms import (
     Triple,
     Var,
     bool_value,
+    literal_datatype,
     numeric_value,
     rule_from_primitive,
     rule_to_primitive,
@@ -56,8 +57,8 @@ class _AgendaEntry:
     rule: Rule
     rule_index: int
     goal: Triple
-    s_key: Term | None
-    o_key: Term | None
+    s_key: Any | None
+    o_key: Any | None
 
 
 class InferenceFuseError(RuntimeError):
@@ -136,7 +137,7 @@ class Engine:
         self._fresh_counter = 0
         self._std_counter = 0
         self._standardized_term_cache: dict[str, Term] = {}
-        self.max_depth = int(self.options.get("max_depth", self.options.get("maxDepth", 128)))
+        self.max_depth = int(self.options.get("max_depth", self.options.get("maxDepth", 100_000)))
         self.max_iterations = int(self.options.get("max_iterations", self.options.get("maxIterations", 1000)))
         self.skolem_salt = str(uuid.uuid4())
         self.store = None
@@ -166,16 +167,17 @@ class Engine:
             self._rule_key_cache[r] = key
         return key
 
-    def _lookup_key(self, term: Term) -> Term | None:
+    def _lookup_key(self, term: Term) -> Any | None:
         """Return an exact-match index key, or None when broad unification is needed."""
         term = self.deref(term, {})
         if isinstance(term, Var) or isinstance(term, OpenListTerm):
             return None
         if isinstance(term, Literal):
-            # Literal unification performs datatype normalization, so an exact
-            # dataclass key could miss equivalent lexical forms. Keep literals
-            # on the predicate bucket unless another position is indexable.
-            return None
+            datatype = literal_datatype(term)
+            number = numeric_value(term)
+            if number is not None and not number.is_nan():
+                return ("literal-number", datatype, number)
+            return ("literal", datatype, (term.lang or "").lower(), term.lexical)
         if isinstance(term, ListTerm):
             return term if all(self._lookup_key(e) is not None for e in term.elems) else None
         if isinstance(term, GraphTerm):
@@ -245,13 +247,15 @@ class Engine:
         sk = self._lookup_key(goal.s)
         if sk is not None:
             bucket = self._facts_by_ps.get((goal.p, sk))
-            if bucket is not None:
-                candidates.append(bucket)
+            if bucket is None:
+                return list(self._var_pred_facts)
+            candidates.append(bucket)
         ok = self._lookup_key(goal.o)
         if ok is not None:
             bucket = self._facts_by_po.get((goal.p, ok))
-            if bucket is not None:
-                candidates.append(bucket)
+            if bucket is None:
+                return list(self._var_pred_facts)
+            candidates.append(bucket)
         if not candidates:
             base: list[Triple] = []
         else:
@@ -451,10 +455,11 @@ class Engine:
             rules_snapshot = [r for r in self.forward_rules if r not in self._agenda_indexed_rules]
             for rule in rules_snapshot:
                 if rule.is_fuse:
-                    if any(True for _ in self.solve(list(rule.premise), {})):
-                        raise InferenceFuseError()
                     continue
-                for subst in self.solve(list(rule.premise), {}):
+                # Prove against a stable fact snapshot before materializing
+                # any heads. Besides matching Eyeling, this keeps predicate
+                # memo tables reusable across all solutions of one rule.
+                for subst in list(self.solve(list(rule.premise), {})):
                     firing_key = self._firing_key(rule, subst)
                     if firing_key in self._fired_rule_bindings:
                         continue
@@ -476,6 +481,13 @@ class Engine:
                 break
         else:
             raise RuntimeError(f"reasoning did not reach a fixpoint after {self.max_iterations} iterations")
+
+        # Fuses are closure assertions. Evaluate them only after ordinary
+        # forward rules have saturated, matching Eyeling's frozen-snapshot
+        # semantics for log:includes/log:notIncludes.
+        for rule in self.forward_rules:
+            if rule.is_fuse and any(True for _ in self.solve(list(rule.premise), {})):
+                raise InferenceFuseError()
 
         query_derived: list[Triple] = []
         if self.query_rules:
@@ -709,107 +721,185 @@ class Engine:
     # ------------------------------------------------------------------
     # Solving and unification
     # ------------------------------------------------------------------
-    def solve(self, goals: list[Triple], subst: Subst, depth: int = 0, allow_reorder: bool = True) -> Iterator[Subst]:
-        if depth > self.max_depth:
-            return
-        if not goals:
-            yield dict(subst)
-            return
-        # Dynamic "most-bound goal first" reordering (_goal_rank) is only
-        # applied to the outermost conjunction (forward-rule premises, and
-        # top-level queries): that conjunction is written by the rule author
-        # in no particular guaranteed order, and reordering it is safe since
-        # it can't affect *which* solutions exist, only how fast they're
-        # found. Backward rule (`<=`) bodies are always walked strictly left
-        # to right instead - once inside one, `allow_reorder` is forced False
-        # for the whole (now-combined) remaining goal list. Mirrors the
-        # Eyeling JS reference engine's `canDeferBuiltins` handling, which is
-        # deliberately disabled for backward rules "to preserve termination"
-        # on recursive backward predicates; it also sidesteps recomputing
-        # _goal_rank for every pending goal at every step, which dominated
-        # runtime on rule sets with many chained backward rules.
-        if allow_reorder:
-            selected = min(range(len(goals)), key=lambda index: self._goal_rank(goals[index], subst))
-        else:
-            selected = 0
-        first = self.apply_subst_triple(goals[selected], subst)
-        rest = goals[:selected] + goals[selected + 1:]
-        # Builtins first when predicate is ground IRI.
-        if isinstance(first.p, Iri):
-            handler = get_builtin(first.p.value)
-            if handler is not None:
-                ctx = BuiltinContext(first, subst, self)
-                for nxt in handler(ctx):
-                    yield from self.solve(rest, nxt, depth + 1, allow_reorder)
-                return
-            if first.p.value in {RDF_FIRST, RDF_REST}:
-                seen_lists: set[ListTerm] = set()
-                for fact in self.facts:
-                    for term in (fact.s, fact.p, fact.o):
-                        if isinstance(term, ListTerm) and term.elems:
-                            seen_lists.add(term)
-                for collection in seen_lists:
-                    obj = collection.elems[0] if first.p.value == RDF_FIRST else ListTerm(collection.elems[1:])
-                    nxt = self.unify_triple(first, Triple(collection, first.p, obj), subst)
-                    if nxt is not None:
-                        yield from self.solve(rest, nxt, depth + 1, allow_reorder)
-        # Opt-in backward-goal memoization/tabling (see the block of helper
-        # methods above `solve`). Only affects predicates the program itself
-        # declared with `log:memoize true`.
-        if isinstance(first.p, Iri) and first.p.value in self._memoized_predicates:
-            memo_key = self._predicate_memo_key(first)
-            if memo_key is not None:
-                table, memo_entry = self._predicate_memo_lookup(memo_key)
-                if not memo_entry["complete"] and not memo_entry["computing"]:
-                    bottom_up_entry = self._try_bottom_up_numeric_memo(first)
-                    if bottom_up_entry is not None:
-                        memo_entry = bottom_up_entry
-                if memo_entry["complete"]:
-                    for answer in memo_entry["answers"]:
-                        nxt = self.unify_triple(first, answer, subst)
+    def solve(
+        self,
+        goals: list[Triple],
+        subst: Subst,
+        depth: int = 0,
+        allow_reorder: bool = True,
+        _visited: frozenset[str] | None = None,
+    ) -> Iterator[Subst]:
+        """Prove goals using an explicit DFS stack.
+
+        Backward proofs can be thousands of goals deep. Keeping this traversal
+        iterative matches Eyeling and avoids treating conjunction length as
+        Python call-stack depth.
+        """
+        State = tuple[list[Any], Subst, int, bool, frozenset[str]]
+        visited_reset = object()
+        stack: list[State] = [(list(goals), dict(subst), depth, allow_reorder, _visited or frozenset())]
+        answer_vars = set(subst)
+
+        def collect_vars(term: Term, target: set[str]) -> None:
+            if isinstance(term, Var):
+                target.add(term.name)
+            elif isinstance(term, ListTerm):
+                for item in term.elems:
+                    collect_vars(item, target)
+            elif isinstance(term, OpenListTerm):
+                for item in term.prefix:
+                    collect_vars(item, target)
+                target.add(term.tail_var)
+            elif isinstance(term, GraphTerm):
+                for triple in term.triples:
+                    collect_vars(triple.s, target)
+                    collect_vars(triple.p, target)
+                    collect_vars(triple.o, target)
+
+        for original_goal in goals:
+            collect_vars(original_goal.s, answer_vars)
+            collect_vars(original_goal.p, answer_vars)
+            collect_vars(original_goal.o, answer_vars)
+
+        def goal_key(goal: Triple) -> str:
+            primitive = triple_to_primitive(goal)
+
+            def canonicalize(value: Any) -> Any:
+                if isinstance(value, dict):
+                    if value.get("_type") in {"Var", "Blank"}:
+                        return {"_type": value["_type"], "name": "*"}
+                    return {key: canonicalize(item) for key, item in value.items()}
+                if isinstance(value, list):
+                    return [canonicalize(item) for item in value]
+                return value
+
+            return json.dumps(canonicalize(primitive), sort_keys=True, default=str)
+
+        while stack:
+            goals_now, subst_now, depth_now, reorder_now, visited = stack.pop()
+            if depth_now > self.max_depth:
+                continue
+            if not goals_now:
+                answer: Subst = {}
+                for name in answer_vars:
+                    value = self.apply_subst(Var(name), subst_now)
+                    if not (isinstance(value, Var) and value.name == name):
+                        answer[name] = value
+                yield answer
+                continue
+            if isinstance(goals_now[0], tuple) and goals_now[0][0] is visited_reset:
+                remaining = goals_now[1:]
+                needed = set(answer_vars)
+                for pending in remaining:
+                    if not isinstance(pending, Triple):
+                        continue
+                    collect_vars(pending.s, needed)
+                    collect_vars(pending.p, needed)
+                    collect_vars(pending.o, needed)
+                compacted: Subst = {}
+                for name in needed:
+                    value = self.apply_subst(Var(name), subst_now)
+                    if not (isinstance(value, Var) and value.name == name):
+                        compacted[name] = value
+                stack.append((remaining, compacted, depth_now, reorder_now, goals_now[0][1]))
+                continue
+
+            selected = (
+                min(range(len(goals_now)), key=lambda index: self._goal_rank(goals_now[index], subst_now))
+                if reorder_now
+                else 0
+            )
+            first = self.apply_subst_triple(goals_now[selected], subst_now)
+            rest = goals_now[:selected] + goals_now[selected + 1:]
+            successors: list[State] = []
+
+            # A registered builtin owns its predicate and does not fall through
+            # to ordinary facts or backward rules.
+            if isinstance(first.p, Iri):
+                handler = get_builtin(first.p.value)
+                if handler is not None:
+                    ctx = BuiltinContext(first, subst_now, self)
+                    for nxt in handler(ctx):
+                        successors.append((rest, nxt, depth_now + 1, reorder_now, visited))
+                    stack.extend(reversed(successors))
+                    continue
+
+                if first.p.value in {RDF_FIRST, RDF_REST}:
+                    seen_lists: set[ListTerm] = set()
+                    for fact in self.facts:
+                        for term in (fact.s, fact.p, fact.o):
+                            if isinstance(term, ListTerm) and term.elems:
+                                seen_lists.add(term)
+                    for collection in seen_lists:
+                        obj = collection.elems[0] if first.p.value == RDF_FIRST else ListTerm(collection.elems[1:])
+                        nxt = self.unify_triple(first, Triple(collection, first.p, obj), subst_now)
                         if nxt is not None:
-                            yield from self.solve(rest, nxt, depth + 1, allow_reorder)
-                    return
-                if not memo_entry["computing"]:
-                    memo_entry["computing"] = True
-                    try:
-                        # Solve `first` in isolation so its complete answer set
-                        # can be recorded, independent of `rest`.
-                        for nxt in self.solve([first], subst, depth + 1, allow_reorder):
-                            self._store_predicate_memo_answer(memo_entry, first, nxt)
-                            yield from self.solve(rest, nxt, depth + 1, allow_reorder)
-                    finally:
-                        memo_entry["computing"] = False
-                        if memo_entry["unsafe"]:
-                            table.pop(memo_key, None)
-                        else:
-                            memo_entry["complete"] = True
-                    return
-                # else: an ancestor call is already computing this exact goal
-                # (self-recursive predicate) - fall through to the normal,
-                # non-memoized resolution below instead of deadlocking.
-        # Facts. Use predicate/position indexes when the selected goal has
-        # ground components; this is essential for large rule sets.
-        for fact in list(self._candidate_facts(first)):
-            nxt = self.unify_triple(first, fact, subst)
-            if nxt is not None:
-                yield from self.solve(rest, nxt, depth + 1, allow_reorder)
-        # Backward rules.
-        for rule in list(self.backward_rules):
-            if len(rule.premise) != 1:
-                # Eyeling backward rules can have a multi-triple head in rare quoted contexts;
-                # the normal derived-predicate form has one head triple.
-                continue
-            # Cheap predicate pre-check before paying for standardize_apart's
-            # deep copy: when both predicates are ground IRIs and differ, the
-            # rule can never match this goal.
-            head_pred = rule.premise[0].p
-            if isinstance(first.p, Iri) and isinstance(head_pred, Iri) and first.p.value != head_pred.value:
-                continue
-            std = self.standardize_apart(rule)
-            nxt = self.unify_triple(first, std.premise[0], subst)
-            if nxt is not None:
-                yield from self.solve(list(std.conclusion) + rest, nxt, depth + 1, False)
+                            successors.append((rest, nxt, depth_now + 1, reorder_now, visited))
+
+            # Predicate-scoped memoization remains opt-in via log:memoize.
+            if isinstance(first.p, Iri) and first.p.value in self._memoized_predicates:
+                memo_key = self._predicate_memo_key(first)
+                if memo_key is not None:
+                    table, memo_entry = self._predicate_memo_lookup(memo_key)
+                    if not memo_entry["complete"] and not memo_entry["computing"]:
+                        bottom_up_entry = self._try_bottom_up_numeric_memo(first)
+                        if bottom_up_entry is not None:
+                            memo_entry = bottom_up_entry
+                    if memo_entry["complete"]:
+                        for answer in memo_entry["answers"]:
+                            nxt = self.unify_triple(first, answer, subst_now)
+                            if nxt is not None:
+                                successors.append((rest, nxt, depth_now + 1, reorder_now, visited))
+                        stack.extend(reversed(successors))
+                        continue
+                    if not memo_entry["computing"]:
+                        memo_entry["computing"] = True
+                        try:
+                            for nxt in self.solve([first], subst_now, depth_now + 1, reorder_now, visited):
+                                self._store_predicate_memo_answer(memo_entry, first, nxt)
+                                successors.append((rest, nxt, depth_now + 1, reorder_now, visited))
+                        finally:
+                            memo_entry["computing"] = False
+                            if memo_entry["unsafe"]:
+                                table.pop(memo_key, None)
+                            else:
+                                memo_entry["complete"] = True
+                        stack.extend(reversed(successors))
+                        continue
+
+            # Facts are indexed by their bound positions.
+            for fact in self._candidate_facts(first):
+                nxt = self.unify_triple(first, fact, subst_now)
+                if nxt is not None:
+                    successors.append((rest, nxt, depth_now + 1, reorder_now, visited))
+
+            # On re-entering an ancestor goal, reject only rules whose body
+            # immediately re-enters that ancestor chain. This is Eyeling's
+            # inexpensive guard for direct and mutual recursion.
+            first_key = goal_key(first)
+            goal_was_visited = first_key in visited
+            # Eyeling only indexes/applies backward rules for a ground IRI
+            # predicate. Variable-predicate goals range over facts.
+            candidate_rules = self.backward_rules if isinstance(first.p, Iri) else ()
+            for rule in candidate_rules:
+                if len(rule.premise) != 1:
+                    continue
+                head_pred = rule.premise[0].p
+                if isinstance(first.p, Iri) and isinstance(head_pred, Iri) and first.p.value != head_pred.value:
+                    continue
+                std = self.standardize_apart(rule)
+                nxt = self.unify_triple(first, std.premise[0], subst_now)
+                if nxt is None:
+                    continue
+                body = list(std.conclusion)
+                if goal_was_visited and any(
+                    goal_key(self.apply_subst_triple(premise, nxt)) in visited for premise in body
+                ):
+                    continue
+                reset_marker = (visited_reset, visited)
+                successors.append((body + [reset_marker] + rest, nxt, depth_now + 1, False, visited | {first_key}))
+
+            stack.extend(reversed(successors))
 
     def _goal_rank(self, goal: Triple, subst: Subst) -> tuple[int, int]:
         pred = self.deref(goal.p, subst)
@@ -837,8 +927,15 @@ class Engine:
         local = pred.value.rsplit("#", 1)[-1]
         if local in {"collectAllIn", "forAllIn"}:
             return (3, variables)
+        if local in {"includes", "notIncludes"} and variables:
+            return (1, variables)
         if local in comparisons and variables:
             return (2, variables)
+        # Most N3 builtins consume their subject and bind/test their object.
+        # Once that input is ground, evaluate them before predicates that
+        # depend on their output.
+        if unbound(goal.s) == 0:
+            return (-1, variables)
         return (1, variables)
 
     def deref(self, t: Term, subst: Subst) -> Term:
@@ -853,7 +950,15 @@ class Engine:
         if isinstance(t, ListTerm):
             return ListTerm(self.apply_subst(e, subst) for e in t.elems)
         if isinstance(t, OpenListTerm):
-            return OpenListTerm((self.apply_subst(e, subst) for e in t.prefix), t.tail_var)
+            prefix = tuple(self.apply_subst(e, subst) for e in t.prefix)
+            tail = self.apply_subst(Var(t.tail_var), subst)
+            if isinstance(tail, ListTerm):
+                return ListTerm((*prefix, *tail.elems))
+            if isinstance(tail, OpenListTerm):
+                return OpenListTerm((*prefix, *tail.prefix), tail.tail_var)
+            if isinstance(tail, Var):
+                return OpenListTerm(prefix, tail.name)
+            return OpenListTerm(prefix, t.tail_var)
         if isinstance(t, GraphTerm):
             return GraphTerm(self.apply_subst_triple(tr, subst) for tr in t.triples)
         return t
@@ -939,6 +1044,20 @@ class Engine:
             return self.unify_term(Var(a.tail_var), ListTerm(b.elems[len(a.prefix):]), cur)
         if isinstance(b, OpenListTerm) and isinstance(a, ListTerm):
             return self.unify_term(b, a, subst)
+        if isinstance(a, OpenListTerm) and isinstance(b, OpenListTerm):
+            common = min(len(a.prefix), len(b.prefix))
+            cur = dict(subst)
+            for x, y in zip(a.prefix[:common], b.prefix[:common]):
+                cur = self.unify_term(x, y, cur)
+                if cur is None:
+                    return None
+            if len(a.prefix) == len(b.prefix):
+                return self.unify_term(Var(a.tail_var), Var(b.tail_var), cur)
+            if len(a.prefix) < len(b.prefix):
+                remainder = OpenListTerm(b.prefix[common:], b.tail_var)
+                return self.unify_term(Var(a.tail_var), remainder, cur)
+            remainder = OpenListTerm(a.prefix[common:], a.tail_var)
+            return self.unify_term(remainder, Var(b.tail_var), cur)
         if isinstance(a, GraphTerm) and isinstance(b, GraphTerm):
             # Treat graph/formula terms as unordered conjunctions.
             if len(a.triples) != len(b.triples):
@@ -974,6 +1093,12 @@ class Engine:
             return value.name == name
         if isinstance(value, ListTerm):
             return any(self._occurs(name, e, subst) for e in value.elems)
+        if isinstance(value, OpenListTerm):
+            return (
+                value.tail_var == name
+                or any(self._occurs(name, e, subst) for e in value.prefix)
+                or self._occurs(name, Var(value.tail_var), subst)
+            )
         if isinstance(value, GraphTerm):
             return any(self._occurs(name, tr.s, subst) or self._occurs(name, tr.p, subst) or self._occurs(name, tr.o, subst) for tr in value.triples)
         return False

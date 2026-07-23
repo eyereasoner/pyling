@@ -119,6 +119,27 @@ def test_dynamic_inference_fuse_is_enforced():
 ''')
 
 
+def test_static_fuse_is_evaluated_after_forward_closure():
+    out = reason('''
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+{} => { :result :ok true. }.
+{ 1 log:notIncludes { :result :ok true. }. } => false.
+''')
+    assert ":result :ok true ." in out
+
+
+def test_mutually_recursive_backward_rules_reach_fact_base_case():
+    out = reason('''
+@prefix : <http://example.org/> .
+:Post :to :Pillar.
+{ :Pillar :to ?what. } <= { ?what :to :Pillar. }.
+{ ?what :to :Pillar. } <= { :Pillar :to ?what. }.
+{ :Pillar :to ?what. } => { :result :is ?what. }.
+''')
+    assert ":result :is :Post ." in out
+
+
 def test_forbidden_unicode_escape_is_rejected():
     with pytest.raises(SyntaxError):
         reason(r'@prefix : <http://example.org/>. :x :value "\uD800".')
@@ -312,6 +333,37 @@ def test_math_list_string_builtins():
     assert ':str :value "ab" .' in out
     assert ":list :first 1 ." in out
     assert ":list :restLength 2 ." in out
+
+
+def test_list_first_rest_constructs_list_from_pair():
+    out = reason("""
+@prefix : <http://example.org/> .
+@prefix list: <http://www.w3.org/2000/10/swap/list#> .
+{ ?whole list:firstRest (1 (2 3)). } => { :result :value ?whole. }.
+""")
+    assert ":result :value (1 2 3) ." in out
+
+
+def test_list_rest_rejects_empty_list():
+    out = reason("""
+@prefix : <http://example.org/> .
+@prefix list: <http://www.w3.org/2000/10/swap/list#> .
+{ () list:rest ?rest. } => { :test :bad true. }.
+""")
+    assert ":test :bad true ." not in out
+
+
+def test_crypto_hash_uses_serialized_literal_lexical_form():
+    out = reason(r'''
+@prefix : <http://example.org/> .
+@prefix crypto: <http://www.w3.org/2000/10/swap/crypto#> .
+{ "line 1\nquote: \\\"x\\\"" crypto:sha256
+  "c5ee7a9e86a7c1a94a02e5d0f8cd22aba5b92613dc1b2044d8aeddc2c0d73334".
+} => { :test :ok true. }.
+{ :not-a-literal crypto:sha256 ?invalid. } => { :test :bad true. }.
+''')
+    assert ":test :ok true ." in out
+    assert ":test :bad true ." not in out
 
 
 def test_log_query_and_output_string():
