@@ -1,0 +1,419 @@
+:root {
+  --eye-bg: #f8fafc;
+  --eye-panel: #ffffff;
+  --eye-ink: #111827;
+  --eye-muted: #4b5563;
+  --eye-line: #e5e7eb;
+  --eye-accent: #2563eb;
+  --eye-accent-strong: #1d4ed8;
+  --eye-secondary: #7c3aed;
+  --eye-soft: #eef2ff;
+  --eye-code: #0f172a;
+  --eye-code-ink: #e5e7eb;
+  --eye-success: #047857;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  background: var(--eye-bg);
+}
+
+body,
+body.jp-Notebook {
+  min-height: 100vh;
+  margin: 0;
+  color: var(--eye-ink);
+  background: var(--eye-bg);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+a {
+  color: var(--eye-accent);
+  text-decoration-thickness: 0.09em;
+  text-underline-offset: 0.18em;
+}
+
+a:hover {
+  color: var(--eye-secondary);
+}
+
+.site-shell,
+body.jp-Notebook > main {
+  width: min(100% - 2rem, 1120px);
+  margin: 0 auto;
+}
+
+.site-header {
+  min-height: 4.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  border-bottom: 1px solid var(--eye-line);
+}
+
+.site-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  color: var(--eye-ink);
+  text-decoration: none;
+}
+
+.site-brand:hover {
+  color: var(--eye-ink);
+}
+
+.site-brand > span:last-child {
+  display: grid;
+  line-height: 1.15;
+}
+
+.site-brand strong {
+  font-size: 1.05rem;
+}
+
+.site-brand small {
+  margin-top: 0.18rem;
+  color: var(--eye-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.site-mark {
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 2rem;
+  border: 7px solid var(--eye-ink);
+  border-radius: 50%;
+  background: var(--eye-panel);
+  box-shadow: inset 0 0 0 3px var(--eye-accent);
+}
+
+.site-nav {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+}
+
+.site-nav a {
+  color: var(--eye-muted);
+  font-size: 0.92rem;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.site-nav a:hover,
+.site-nav a[aria-current="page"] {
+  color: var(--eye-accent);
+}
+
+.overview {
+  padding: 3.2rem 0 4rem;
+}
+
+.overview-intro {
+  max-width: 48rem;
+  margin-bottom: 2.4rem;
+}
+
+.eyebrow {
+  margin: 0 0 0.65rem;
+  color: var(--eye-secondary);
+  font-size: 0.8rem;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.overview h1 {
+  max-width: 48rem;
+  margin: 0;
+  font-size: clamp(2.25rem, 6vw, 4.5rem);
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.lede {
+  max-width: 44rem;
+  margin: 1.2rem 0 0;
+  color: var(--eye-muted);
+  font-size: 1.15rem;
+}
+
+.notebook-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.notebook-card {
+  min-width: 0;
+  padding: 1.25rem;
+  border: 1px solid var(--eye-line);
+  border-radius: 8px;
+  background: var(--eye-panel);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.notebook-card:first-child {
+  border-top: 3px solid var(--eye-accent);
+}
+
+.notebook-number {
+  color: var(--eye-secondary);
+  font-size: 0.78rem;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.notebook-card h2 {
+  margin: 0.45rem 0 0.55rem;
+  font-size: 1.2rem;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+
+.notebook-card h2 a {
+  color: var(--eye-ink);
+  text-decoration: none;
+}
+
+.notebook-card h2 a:hover {
+  color: var(--eye-accent);
+}
+
+.notebook-card p {
+  margin: 0;
+  color: var(--eye-muted);
+}
+
+.notebook-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 1rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.path-note {
+  margin-top: 2.5rem;
+  padding: 1rem 1.15rem;
+  border-left: 4px solid var(--eye-secondary);
+  background: var(--eye-soft);
+  color: #3730a3;
+}
+
+.path-note p {
+  margin: 0;
+}
+
+body.jp-Notebook > main > .site-header,
+body.jp-Notebook > main > .site-footer {
+  width: min(100%, 1120px);
+  margin-right: auto;
+  margin-left: auto;
+}
+
+body.jp-Notebook > main > .jp-Cell {
+  width: min(100%, 52rem);
+  margin-right: auto;
+  margin-left: auto;
+}
+
+body.jp-Notebook > main > .site-header + .jp-Cell {
+  margin-top: 3rem;
+}
+
+.jp-MarkdownCell,
+.jp-MarkdownCell .jp-Cell-inputWrapper,
+.jp-MarkdownCell .jp-InputArea,
+.jp-MarkdownCell .jp-RenderedHTMLCommon {
+  background: transparent !important;
+}
+
+.jp-MarkdownCell .jp-RenderedHTMLCommon {
+  padding-right: 0;
+  padding-left: 0;
+}
+
+.jp-RenderedHTMLCommon {
+  color: var(--eye-ink);
+  font-family: inherit;
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
+.jp-RenderedHTMLCommon h1,
+.jp-RenderedHTMLCommon h2,
+.jp-RenderedHTMLCommon h3 {
+  color: var(--eye-ink);
+  font-family: inherit;
+  letter-spacing: 0;
+}
+
+.jp-RenderedHTMLCommon h1 {
+  margin: 0 0 1.1rem;
+  padding: 0 0 1rem;
+  border-bottom: 1px solid var(--eye-line);
+  font-size: clamp(2rem, 5vw, 3.35rem);
+  line-height: 1.05;
+}
+
+.jp-RenderedHTMLCommon h2 {
+  margin-top: 2.6rem;
+  font-size: 1.65rem;
+  line-height: 1.2;
+}
+
+.jp-RenderedHTMLCommon h3 {
+  margin-top: 2rem;
+  font-size: 1.2rem;
+}
+
+.jp-RenderedHTMLCommon p,
+.jp-RenderedHTMLCommon li {
+  color: var(--eye-muted);
+}
+
+.jp-RenderedHTMLCommon strong {
+  color: var(--eye-ink);
+}
+
+.jp-RenderedHTMLCommon .eyebrow {
+  margin-bottom: 0.55rem;
+  color: var(--eye-secondary);
+}
+
+.jp-RenderedHTMLCommon code {
+  padding: 0.12rem 0.32rem;
+  border-radius: 4px;
+  background: var(--eye-soft);
+  color: #3730a3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.jp-Cell {
+  margin-top: 0.65rem;
+  margin-bottom: 0.65rem;
+}
+
+.jp-CodeCell {
+  overflow: hidden;
+  border: 1px solid var(--eye-line);
+  border-radius: 8px;
+  background: var(--eye-panel);
+}
+
+.jp-CodeCell .jp-Cell-inputWrapper {
+  border-left: 3px solid var(--eye-accent);
+}
+
+.jp-InputArea,
+.jp-InputArea-editor {
+  border: 0;
+  border-radius: 0;
+  background: #f1f5f9;
+}
+
+.jp-InputPrompt,
+.jp-OutputPrompt {
+  color: var(--eye-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.jp-OutputArea {
+  border-top: 1px solid var(--eye-line);
+  background: var(--eye-panel);
+}
+
+.jp-OutputArea-output {
+  color: var(--eye-ink);
+}
+
+.jp-OutputArea-output pre,
+.jp-RenderedText pre {
+  color: var(--eye-ink);
+}
+
+.jp-RenderedHTMLCommon blockquote {
+  margin: 1.25rem 0;
+  padding: 0.7rem 1rem;
+  border-left: 4px solid var(--eye-secondary);
+  background: var(--eye-soft);
+  color: #3730a3;
+}
+
+.site-footer {
+  min-height: 5rem;
+  margin-top: 3.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-top: 1px solid var(--eye-line);
+  color: var(--eye-muted);
+  font-size: 0.9rem;
+}
+
+@media (max-width: 720px) {
+  .site-shell,
+  body.jp-Notebook > main {
+    width: min(100% - 1rem, 1120px);
+  }
+
+  .site-header {
+    align-items: flex-start;
+    padding: 0.8rem 0;
+  }
+
+  .site-nav {
+    gap: 0.7rem;
+  }
+
+  .site-nav a {
+    font-size: 0.82rem;
+  }
+
+  .notebook-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .overview {
+    padding-top: 2.2rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .site-brand small {
+    display: none;
+  }
+
+  .site-mark {
+    width: 1.75rem;
+    height: 1.75rem;
+    flex-basis: 1.75rem;
+    border-width: 6px;
+  }
+
+  .site-nav a:nth-child(2) {
+    display: none;
+  }
+
+  .site-footer {
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: center;
+  }
+}

@@ -48,7 +48,8 @@ jobs:
             --output-dir site/notebooks \
             docs/notebooks/*.ipynb
           cp docs/notebooks/index.html site/index.html
-          cp docs/notebooks/eyereasoner.css site/assets/eyereasoner.css
+          cp docs/notebooks/assets/eyereasoner.css site/assets/eyereasoner.css
+          cp docs/notebooks/*.ipynb site/notebooks/
           cp docs/notebooks/README.md site/notebooks/README.md
 
       - name: Upload notebook HTML artifact
