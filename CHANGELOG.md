@@ -5,6 +5,10 @@ All notable changes to pyling will be documented in this file.
 The format is based on Keep a Changelog, and this project uses semantic
 versioning while the public package API is still stabilizing.
 
+## [0.1.2]
+
+**Full Changelog**: https://github.com/eyereasoner/pyling/compare/0.1.1...0.1.2
+
 ## [0.1.1]
 
 ### Added
