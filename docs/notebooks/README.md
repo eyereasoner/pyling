@@ -16,6 +16,6 @@ Or execute them in place:
 jupyter nbconvert --to notebook --execute --inplace docs/notebooks/*.ipynb
 ```
 
-The notebooks avoid network access and embed their small rule/data fixtures so
-they remain useful as published documentation.
-
+Notebooks 02 and 04 load their maintained rule profiles and example fixtures
+from `pietercolpaert/rdfjs-inference-engine` on GitHub, so executing the full
+set requires network access. The source URLs are visible in the notebooks.
