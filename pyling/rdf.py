@@ -47,7 +47,8 @@ from .terms import (
 )
 
 MESSAGE_VERSION_RE = re.compile(r"^\s*@?VERSION\s+['\"](?:1\.1|1\.2|1\.2-basic)-messages['\"]\s*\.?\s*(?:#.*)?$", re.I | re.M)
-MESSAGE_LINE_RE = re.compile(r"^\s*@?MESSAGE(?:\s*\.)?\s*(?:#.*)?$", re.I)
+MESSAGE_LINE_RE = re.compile(r"^\s*(?:MESSAGE|@MESSAGE\s*\.)\s*(?:#.*)?$", re.I)
+MESSAGE_DIRECTIVE_RE = re.compile(r"^\s*(?:MESSAGE|@MESSAGE)\b", re.I)
 PREFIX_LINE_RE = re.compile(r"^\s*(?:@prefix\s+([^\s]+)\s+<([^>]*)>\s*\.?|PREFIX\s+([^\s]+)\s+<([^>]*)>\s*\.?|@base\s+<([^>]*)>\s*\.?|BASE\s+<([^>]*)>\s*\.?)\s*(?:#.*)?$", re.I)
 VERSION_LINE_RE = re.compile(
     r"^\s*(?:VERSION\s+(['\"])([^'\"\r\n]+)\1|@version\s+(['\"])([^'\"\r\n]+)\3\s*\.)\s*(?:#.*)?$",
@@ -712,7 +713,7 @@ def _guess_format(text: str, requested: str | None = None) -> str:
     if requested and requested.lower() != "auto":
         return _format_alias(requested)
     s = str(text or "")
-    if re.search(r"(?m)^\s*(?:GRAPH\s+)?(?:<[^>]+>|[A-Za-z_][\w.-]*:|_:)\s*\{", s):
+    if re.search(r"(?m)^\s*(?:GRAPH\s+)?(?:<[^>]+>|[A-Za-z_][\w.-]*:[^\s{]*|_:[^\s{]+)\s*\{", s):
         return "trig"
     if re.search(r"(?m)^\s*<[^>]+>\s+<[^>]+>\s+", s):
         # Could be N-Triples/N-Quads. rdflib's turtle parser handles many NT
@@ -821,30 +822,105 @@ def is_rdf_message_log(text: str) -> bool:
     return bool(MESSAGE_VERSION_RE.search(str(text or "")))
 
 
-def _directive_prelude(text: str) -> str:
-    lines = []
-    for line in str(text or "").splitlines():
-        if PREFIX_LINE_RE.match(line):
-            lines.append(line)
-    return "\n".join(lines) + ("\n" if lines else "")
+def _message_preludes(chunks: Iterable[str]) -> Iterator[str]:
+    """Yield directives active at the start of each message.
+
+    RDF directives remain active across message boundaries, but a declaration
+    in a later message must not affect an earlier one.
+    """
+    active: dict[tuple[str, str], str] = {}
+    for chunk in chunks:
+        yield "\n".join(active.values()) + ("\n" if active else "")
+        for line in chunk.splitlines():
+            match = PREFIX_LINE_RE.match(line)
+            if not match:
+                continue
+            if match.group(1) is not None or match.group(3) is not None:
+                prefix = match.group(1) or match.group(3) or ":"
+                active[("prefix", prefix)] = line
+            else:
+                active[("base", "")] = line
+
+
+def _advance_rdf_structure(
+    line: str,
+    *,
+    graph_depth: int,
+    quote: str | None,
+    long_string: bool,
+) -> tuple[int, str | None, bool]:
+    """Track graph braces while ignoring comments, IRIs, and string content."""
+    i = 0
+    while i < len(line):
+        if quote is not None:
+            marker = quote * (3 if long_string else 1)
+            if line.startswith(marker, i):
+                quote = None
+                long_string = False
+                i += len(marker)
+            elif line[i] == "\\":
+                i += 2
+            else:
+                i += 1
+            continue
+
+        ch = line[i]
+        if ch == "#":
+            break
+        if ch in {'"', "'"}:
+            quote = ch
+            long_string = line.startswith(ch * 3, i)
+            i += 3 if long_string else 1
+            continue
+        if ch == "<" and not line.startswith("<<", i):
+            i = _read_iri_at(line, i)
+            continue
+        if line.startswith("{|", i) or line.startswith("|}", i):
+            i += 2
+            continue
+        if ch == "{":
+            graph_depth += 1
+        elif ch == "}":
+            graph_depth -= 1
+        i += 1
+    return graph_depth, quote, long_string
 
 
 def split_rdf_messages(text: str) -> list[str]:
     chunks = [""]
     ended_with_marker = False
+    graph_depth = 0
+    quote: str | None = None
+    long_string = False
     for line in str(text or "").splitlines(True):
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        if quote is not None:
             chunks[-1] += line
+            graph_depth, quote, long_string = _advance_rdf_structure(
+                line,
+                graph_depth=graph_depth,
+                quote=quote,
+                long_string=long_string,
+            )
             continue
-        if MESSAGE_VERSION_RE.match(line):
+        if graph_depth == 0 and MESSAGE_VERSION_RE.match(line):
             continue
         if MESSAGE_LINE_RE.match(line):
+            if graph_depth:
+                raise RdfSyntaxError("RDF message delimiter is not allowed inside an open graph block")
             chunks.append("")
             ended_with_marker = True
             continue
+        if MESSAGE_DIRECTIVE_RE.match(line):
+            raise RdfSyntaxError(f"invalid RDF message delimiter: {stripped}")
         chunks[-1] += line
         ended_with_marker = False
+        graph_depth, quote, long_string = _advance_rdf_structure(
+            line,
+            graph_depth=graph_depth,
+            quote=quote,
+            long_string=long_string,
+        )
     if ended_with_marker:
         chunks.pop()
     return chunks
@@ -854,9 +930,17 @@ def _parse_payload(chunk: str, prelude: str, idx: int, base_iri: str | None) -> 
     text = prelude + chunk
     if not text.strip():
         return []
-    try:
-        doc = parse_rdf_text(text, format="auto", base_iri=base_iri, rdf12=True)
-    except Exception:
+    doc: Document | None = None
+    formats = [_guess_format(text)]
+    if formats[0] == "nt":
+        formats.append("nquads")
+    for fmt in formats:
+        try:
+            doc = parse_rdf_text(text, format=fmt, base_iri=base_iri, rdf12=True)
+            break
+        except Exception:
+            pass
+    if doc is None:
         # Some message logs contain simple N3 facts accepted by the core parser.
         doc = parse_n3(text, base_iri=base_iri, blank_prefix=f"_:eymsg_m{idx:03d}_")
     # Scope blank labels per message.
@@ -877,9 +961,12 @@ def parse_rdf_message_log(text: str, *, base_iri: str | None = None, label: str 
     source = str(text or "")
     if not is_rdf_message_log(source):
         raise RdfSyntaxError("input is not an RDF Message Log")
-    prelude = _directive_prelude(source)
     chunks = split_rdf_messages(source)
-    payloads = [_parse_payload(chunk, prelude, idx + 1, base_iri) for idx, chunk in enumerate(chunks)]
+    preludes = _message_preludes(chunks)
+    payloads = [
+        _parse_payload(chunk, prelude, idx + 1, base_iri)
+        for idx, (chunk, prelude) in enumerate(zip(chunks, preludes))
+    ]
     return _message_replay_document(source, payloads, base_iri=base_iri)
 
 
@@ -888,8 +975,8 @@ def iter_rdf_message_documents(text: str, *, base_iri: str | None = None) -> Ite
     source = str(text or "")
     if not is_rdf_message_log(source):
         raise RdfSyntaxError("input is not an RDF Message Log")
-    prelude = _directive_prelude(source)
-    for idx, chunk in enumerate(split_rdf_messages(source), start=1):
+    chunks = split_rdf_messages(source)
+    for idx, (chunk, prelude) in enumerate(zip(chunks, _message_preludes(chunks)), start=1):
         payload = _parse_payload(chunk, prelude, idx, base_iri)
         yield _message_replay_document(source, [payload], base_iri=base_iri, first_index=idx)
 
