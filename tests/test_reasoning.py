@@ -9,6 +9,7 @@ from pyling import (
     INFERENCE_FUSE_EXIT_CODE,
     InferenceFuseError,
     Iri,
+    ListTerm,
     Literal,
     Rule,
     Triple,
@@ -20,6 +21,8 @@ from pyling import (
     unregister_builtin,
     run_async,
 )
+from pyling.engine import Engine
+from pyling.parser import parse_n3
 
 EX = "http://example.org/"
 
@@ -39,6 +42,60 @@ def test_forward_rule_basic():
 """)
     assert ":Socrates a :Mortal ." in out
     assert ":Socrates a :Man ." not in out
+
+
+def test_partially_bound_list_subject_uses_component_index():
+    document = parse_n3("""
+@prefix : <http://example.org/> .
+(:a :b1 :c) :relation :v1 .
+(:a :b2 :d) :relation :v2 .
+(:x :b3 :c) :relation :v3 .
+""")
+    engine = Engine(document)
+    goal = Triple(
+        ListTerm((Iri(EX + "a"), Var("middle"), Iri(EX + "c"))),
+        Iri(EX + "relation"),
+        Var("value"),
+    )
+    assert list(engine._candidate_facts(goal)) == [document.triples[0]]
+
+
+def test_unbound_term_does_not_trigger_rdf_collection_scan():
+    document = parse_n3("""
+@prefix : <http://example.org/> .
+:head <http://www.w3.org/1999/02/22-rdf-syntax-ns#first> :value .
+""")
+    engine = Engine(document)
+    assert engine.rdf_collection_to_list(Var("list")) is None
+
+
+def test_single_premise_agenda_allows_unrelated_backward_predicates():
+    document = parse_n3("""
+@prefix : <http://example.org/> .
+{ ?x :source :value } => { ?x :result :value } .
+{ ?x :other ?y } <= { ?x :base ?y } .
+:item :source :value .
+""")
+    engine = Engine(document)
+    engine._build_single_premise_agenda()
+    assert document.forward_rules[0] in engine._agenda_indexed_rules
+
+
+def test_completed_top_level_goal_answers_are_reused():
+    document = parse_n3("""
+@prefix : <http://example.org/> .
+:a :edge :b .
+:b :edge :c .
+{ ?x :path ?y } <= { ?x :edge ?y } .
+{ ?x :path ?z } <= { ?x :edge ?y . ?y :path ?z } .
+""")
+    engine = Engine(document)
+    goal = Triple(Iri(EX + "a"), Iri(EX + "path"), Var("target"))
+    first = list(engine.solve([goal], {}))
+    counter = engine._std_counter
+    second = list(engine.solve([goal], {}))
+    assert second == first
+    assert engine._std_counter == counter
 
 
 def test_integer_before_statement_dot_and_punctuation_literal():

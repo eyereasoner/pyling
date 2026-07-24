@@ -61,6 +61,8 @@ class _AgendaEntry:
     goal: Triple
     s_key: Any | None
     o_key: Any | None
+    fast_subject_var: str | None = None
+    fast_object_var: str | None = None
 
 
 class InferenceFuseError(RuntimeError):
@@ -117,6 +119,9 @@ class Engine:
         self._facts_by_pred: dict[Term, list[Triple]] = {}
         self._facts_by_ps: dict[tuple[Term, Term], list[Triple]] = {}
         self._facts_by_po: dict[tuple[Term, Term], list[Triple]] = {}
+        self._facts_by_list_component: dict[
+            tuple[Term, str, tuple[int, ...], Any], list[Triple]
+        ] = {}
         self._var_pred_facts: list[Triple] = []
         for _tr in self.facts:
             self._index_fact(_tr)
@@ -125,15 +130,28 @@ class Engine:
         self.derived: list[Triple] = []
         self.forward_rules: list[Rule] = list(doc.forward_rules)
         self.backward_rules: list[Rule] = list(doc.backward_rules)
+        self._backward_rules_by_pred: dict[str, list[Rule]] = {}
+        self._wild_backward_rules: list[Rule] = []
+        for _rule in self.backward_rules:
+            if len(_rule.premise) != 1:
+                continue
+            if isinstance(_rule.premise[0].p, Iri):
+                self._backward_rules_by_pred.setdefault(_rule.premise[0].p.value, []).append(_rule)
+            else:
+                self._wild_backward_rules.append(_rule)
         self._backward_predicates: set[str] = {
             rule.premise[0].p.value
             for rule in self.backward_rules
             if len(rule.premise) == 1 and isinstance(rule.premise[0].p, Iri)
         }
+        self._has_wild_backward_predicate = any(
+            len(rule.premise) == 1 and not isinstance(rule.premise[0].p, Iri)
+            for rule in self.backward_rules
+        )
         self.query_rules: list[Rule] = list(doc.query_rules)
         self._rule_key_cache: dict[Rule, str] = {}
         self._rule_ids: set[str] = {self._rule_key(r) for r in self.forward_rules + self.backward_rules}
-        self._fired_rule_bindings: set[str] = set()
+        self._fired_rule_bindings: set[tuple[int, tuple[Triple, ...]]] = set()
         self._rule_input_signatures: dict[Rule, tuple] = {}
         self._agenda_active = False
         self._agenda_queue: list[Triple] = []
@@ -156,6 +174,9 @@ class Engine:
         self._memoized_predicates: set[str] = set()
         self._predicate_memo_tables: dict[tuple, dict[str, dict[str, Any]]] = {}
         self._bottom_up_memo_active: set[tuple[str, int]] = set()
+        self._goal_memo_version: tuple | None = None
+        self._goal_memo_table: dict[str, list[Subst]] = {}
+        self._term_substitution_cache: dict[int, tuple[Term, bool]] = {}
         self._extract_memoize_declarations()
 
     def term_to_n3(self, term: Term) -> str:
@@ -215,11 +236,29 @@ class Engine:
         ok = self._lookup_key(tr.o)
         if ok is not None:
             self._facts_by_po.setdefault((tr.p, ok), []).append(tr)
+        for side, term in (("s", tr.s), ("o", tr.o)):
+            for path, key in self._list_component_keys(term):
+                index_key = (tr.p, side, path, key)
+                self._facts_by_list_component.setdefault(index_key, []).append(tr)
+
+    def _list_component_keys(
+        self, term: Term, path: tuple[int, ...] = ()
+    ) -> Iterator[tuple[tuple[int, ...], Any]]:
+        if not isinstance(term, ListTerm):
+            return
+        for index, item in enumerate(term.elems):
+            item_path = path + (index,)
+            key = self._lookup_key(item)
+            if key is not None:
+                yield item_path, key
+            if isinstance(item, ListTerm):
+                yield from self._list_component_keys(item, item_path)
 
     def _rebuild_fact_indexes(self) -> None:
         self._facts_by_pred.clear()
         self._facts_by_ps.clear()
         self._facts_by_po.clear()
+        self._facts_by_list_component.clear()
         self._var_pred_facts.clear()
         for tr in self.facts:
             self._index_fact(tr)
@@ -276,6 +315,24 @@ class Engine:
             if bucket is None:
                 return list(self._var_pred_facts)
             candidates.append(bucket)
+        component_candidates: list[list[Triple]] = []
+        for side, term in (("s", goal.s), ("o", goal.o)):
+            for path, key in self._list_component_keys(term):
+                index_key = (goal.p, side, path, key)
+                bucket = self._facts_by_list_component.get(index_key)
+                if bucket is None:
+                    return list(self._var_pred_facts)
+                component_candidates.append(bucket)
+        if component_candidates:
+            smallest = min(component_candidates, key=len)
+            if len(component_candidates) == 1:
+                candidates.append(smallest)
+            else:
+                shared = {id(fact) for fact in smallest}
+                for bucket in component_candidates:
+                    if bucket is not smallest:
+                        shared.intersection_update(id(fact) for fact in bucket)
+                candidates.append([fact for fact in smallest if id(fact) in shared])
         if not candidates:
             base: list[Triple] = []
         else:
@@ -433,6 +490,10 @@ class Engine:
             self.backward_rules.append(rule)
             if len(rule.premise) == 1 and isinstance(rule.premise[0].p, Iri):
                 self._backward_predicates.add(rule.premise[0].p.value)
+                self._backward_rules_by_pred.setdefault(rule.premise[0].p.value, []).append(rule)
+            elif len(rule.premise) == 1:
+                self._has_wild_backward_predicate = True
+                self._wild_backward_rules.append(rule)
             if self._agenda_active:
                 # Forward rules indexed before this derived backward rule
                 # existed may now be provable without an extensional fact.
@@ -466,12 +527,20 @@ class Engine:
             for tr in rule.conclusion
         )
 
+    def _rule_has_strict_ground_head(self, rule: Rule) -> bool:
+        return (
+            rule.dynamic_conclusion is None
+            and bool(rule.conclusion)
+            and not self._rule_has_head_blanks(rule)
+            and all(
+                not term_has_vars(term)
+                for triple in rule.conclusion
+                for term in (triple.s, triple.p, triple.o)
+            )
+        )
+
     def _is_fast_single_premise_rule(self, rule: Rule) -> bool:
         if rule.is_fuse or rule.dynamic_conclusion is not None or len(rule.premise) != 1:
-            return False
-        if self.backward_rules:
-            # A backward rule may prove the premise without an extensional fact.
-            # Keep that case on the complete, generic solver path.
             return False
         if self._rule_has_head_blanks(rule):
             # Preserve legacy blank-node allocation order for existential heads.
@@ -482,6 +551,10 @@ class Engine:
         if goal.p.value in {LOG_IMPLIES, LOG_IMPLIED_BY}:
             # Live rules are exposed through a virtual rule-as-data view that
             # is consulted by the generic solver, not the extensional agenda.
+            return False
+        if self._has_wild_backward_predicate or goal.p.value in self._backward_predicates:
+            # A backward rule may prove this premise without an extensional
+            # fact. Keep only that predicate on the complete solver path.
             return False
         return get_builtin(goal.p.value) is None
 
@@ -505,7 +578,17 @@ class Engine:
             if not self._is_fast_single_premise_rule(rule):
                 continue
             goal = rule.premise[0]
-            entry = _AgendaEntry(rule, i, goal, self._lookup_key(goal.s), self._lookup_key(goal.o))
+            s_key = self._lookup_key(goal.s)
+            o_key = self._lookup_key(goal.o)
+            entry = _AgendaEntry(
+                rule,
+                i,
+                goal,
+                s_key,
+                o_key,
+                goal.s.name if isinstance(goal.s, Var) and o_key is not None else None,
+                goal.o.name if isinstance(goal.o, Var) and s_key is not None else None,
+            )
             self._agenda_indexed_rules.add(rule)
             self._add_agenda_entry(entry)
 
@@ -538,13 +621,14 @@ class Engine:
         return out
 
     def _fire_agenda_rule(self, entry: _AgendaEntry, fact: Triple) -> bool:
-        subst = self.unify_triple(entry.goal, fact, {})
-        if subst is None:
-            return False
-        firing_key = self._firing_key(entry.rule, subst)
-        if firing_key in self._fired_rule_bindings:
-            return False
-        self._fired_rule_bindings.add(firing_key)
+        if entry.fast_subject_var is not None:
+            subst = {entry.fast_subject_var: fact.s}
+        elif entry.fast_object_var is not None:
+            subst = {entry.fast_object_var: fact.o}
+        else:
+            subst = self.unify_triple(entry.goal, fact, {})
+            if subst is None:
+                return False
         changed = False
         for head in entry.rule.conclusion:
             if not self._head_template_is_bound(head, subst):
@@ -629,15 +713,28 @@ class Engine:
         for rule in rules:
             if rule.is_fuse:
                 continue
+            strict_ground_head = self._rule_has_strict_ground_head(rule)
+            if strict_ground_head and all(head in self._fact_set for head in rule.conclusion):
+                continue
             input_signature = self._rule_input_signature(rule)
             if self._rule_input_signatures.get(rule) == input_signature:
                 continue
             self._rule_input_signatures[rule] = input_signature
-            for subst in list(self.solve(list(rule.premise), {})):
-                firing_key = self._firing_key(rule, subst)
-                if firing_key in self._fired_rule_bindings:
-                    continue
-                self._fired_rule_bindings.add(firing_key)
+            has_head_blanks = self._rule_has_head_blanks(rule)
+            solution_iter = self.solve(list(rule.premise), {})
+            if strict_ground_head:
+                first_solution = next(solution_iter, None)
+                solutions: Iterable[Subst] = () if first_solution is None else (first_solution,)
+            else:
+                # Freeze the answer set before adding facts. Derived facts
+                # invalidate proof tables and must not perturb this traversal.
+                solutions = list(solution_iter)
+            for subst in solutions:
+                if has_head_blanks:
+                    firing_key = self._firing_key(rule, subst)
+                    if firing_key in self._fired_rule_bindings:
+                        continue
+                    self._fired_rule_bindings.add(firing_key)
                 heads = list(rule.conclusion)
                 if rule.dynamic_conclusion is not None:
                     dynamic = self.apply_subst(rule.dynamic_conclusion, subst)
@@ -735,12 +832,11 @@ class Engine:
             closure = triples_to_n3(all_triples, self.prefixes)
         return ReasonStreamResult(self.prefixes, list(self.facts), list(self.derived), query_mode, selected, query_derived, closure, self.store)
 
-    def _firing_key(self, rule: Rule, subst: Subst) -> str:
-        values = {
-            name: term_to_primitive(self.apply_subst(value, subst))
-            for name, value in sorted(subst.items())
-        }
-        return self._rule_key(rule) + "|" + json.dumps(values, sort_keys=True, default=str)
+    def _firing_key(self, rule: Rule, subst: Subst) -> tuple[int, tuple[Triple, ...]]:
+        return (
+            id(rule),
+            tuple(self.apply_subst_triple(goal, subst) for goal in rule.premise),
+        )
 
     def _has_output_strings(self, triples: Iterable[Triple]) -> bool:
         return any(isinstance(t.p, Iri) and t.p.value == LOG_OUTPUT_STRING for t in triples)
@@ -792,6 +888,29 @@ class Engine:
                 for item in term.triples
             )
         return False
+
+    def _term_needs_substitution(self, term: Term) -> bool:
+        if isinstance(term, (Iri, Literal, Blank)):
+            return False
+        if isinstance(term, (Var, OpenListTerm)):
+            return True
+        identity = id(term)
+        cached = self._term_substitution_cache.get(identity)
+        if cached is not None and cached[0] is term:
+            return cached[1]
+        if isinstance(term, ListTerm):
+            result = any(self._term_needs_substitution(item) for item in term.elems)
+        elif isinstance(term, GraphTerm):
+            result = any(
+                self._term_needs_substitution(item.s)
+                or self._term_needs_substitution(item.p)
+                or self._term_needs_substitution(item.o)
+                for item in term.triples
+            )
+        else:
+            result = True
+        self._term_substitution_cache[identity] = (term, result)
+        return result
 
     def _triple_contains_unbound_var(self, triple: Triple) -> bool:
         return (
@@ -985,6 +1104,26 @@ class Engine:
     # ------------------------------------------------------------------
     # Solving and unification
     # ------------------------------------------------------------------
+    def _completed_goal_memo_key(
+        self,
+        goals: list[Triple],
+        subst: Subst,
+        allow_reorder: bool,
+    ) -> str:
+        instantiated = [triple_to_primitive(self.apply_subst_triple(goal, subst)) for goal in goals]
+        return json.dumps(
+            {"reorder": allow_reorder, "goals": instantiated},
+            sort_keys=True,
+            default=str,
+        )
+
+    def _completed_goal_memo(self) -> dict[str, list[Subst]]:
+        version = self._memo_scope_version()
+        if self._goal_memo_version != version:
+            self._goal_memo_version = version
+            self._goal_memo_table = {}
+        return self._goal_memo_table
+
     def solve(
         self,
         goals: list[Triple],
@@ -999,12 +1138,25 @@ class Engine:
         iterative matches Eyeling and avoids treating conjunction length as
         Python call-stack depth.
         """
+        goal_memo_key: str | None = None
+        goal_memo: dict[str, list[Subst]] | None = None
+        if depth == 0 and not _visited and not subst:
+            goal_memo = self._completed_goal_memo()
+            goal_memo_key = self._completed_goal_memo_key(goals, subst, allow_reorder)
+            cached = goal_memo.get(goal_memo_key)
+            if cached is not None:
+                for answer in cached:
+                    yield dict(answer)
+                return
+
         State = tuple[list[Any], Subst, int, bool, frozenset[str]]
         visited_reset = object()
         stack: list[State] = [(list(goals), dict(subst), depth, allow_reorder, _visited or frozenset())]
         answer_vars = set(subst)
 
         def collect_vars(term: Term, target: set[str]) -> None:
+            if not self._term_needs_substitution(term):
+                return
             if isinstance(term, Var):
                 target.add(term.name)
             elif isinstance(term, ListTerm):
@@ -1024,6 +1176,7 @@ class Engine:
             collect_vars(original_goal.s, answer_vars)
             collect_vars(original_goal.p, answer_vars)
             collect_vars(original_goal.o, answer_vars)
+        completed_answers: list[Subst] = []
 
         def goal_key(goal: Triple) -> str:
             primitive = triple_to_primitive(goal)
@@ -1052,6 +1205,8 @@ class Engine:
                     value = self.apply_subst(Var(name), subst_now)
                     if not (isinstance(value, Var) and value.name == name):
                         answer[name] = value
+                if goal_memo_key is not None:
+                    completed_answers.append(dict(answer))
                 yield answer
                 continue
             if isinstance(goals_now[0], tuple) and goals_now[0][0] is visited_reset:
@@ -1071,11 +1226,7 @@ class Engine:
                 stack.append((remaining, compacted, depth_now, reorder_now, goals_now[0][1]))
                 continue
 
-            selected = (
-                min(range(len(goals_now)), key=lambda index: self._goal_rank(goals_now[index], subst_now))
-                if reorder_now
-                else 0
-            )
+            selected = self._select_goal_index(goals_now, subst_now) if reorder_now else 0
             first = self.apply_subst_triple(goals_now[selected], subst_now)
             rest = goals_now[:selected] + goals_now[selected + 1:]
             successors: list[State] = []
@@ -1151,12 +1302,16 @@ class Engine:
             goal_was_visited = first_key in visited
             # Eyeling only indexes/applies backward rules for a ground IRI
             # predicate. Variable-predicate goals range over facts.
-            candidate_rules = self.backward_rules if isinstance(first.p, Iri) else ()
+            candidate_rules: Iterable[Rule]
+            if isinstance(first.p, Iri):
+                candidate_rules = (
+                    *self._backward_rules_by_pred.get(first.p.value, ()),
+                    *self._wild_backward_rules,
+                )
+            else:
+                candidate_rules = ()
             for rule in candidate_rules:
                 if len(rule.premise) != 1:
-                    continue
-                head_pred = rule.premise[0].p
-                if isinstance(first.p, Iri) and isinstance(head_pred, Iri) and first.p.value != head_pred.value:
                     continue
                 std = self.standardize_apart(rule)
                 nxt = self.unify_triple(first, std.premise[0], subst_now)
@@ -1171,6 +1326,23 @@ class Engine:
                 successors.append((body + [reset_marker] + rest, nxt, depth_now + 1, False, visited | {first_key}))
 
             stack.extend(reversed(successors))
+
+        if goal_memo is not None and goal_memo_key is not None:
+            goal_memo[goal_memo_key] = completed_answers
+
+    def _select_goal_index(self, goals: list[Any], subst: Subst) -> int:
+        for index, goal in enumerate(goals):
+            if not isinstance(goal, Triple):
+                return index
+            predicate = self.deref(goal.p, subst)
+            handler = get_builtin(predicate.value) if isinstance(predicate, Iri) else None
+            rank = self._goal_rank(goal, subst)
+            if handler is not None:
+                if rank[0] < 0:
+                    return index
+            elif rank[0] == 0:
+                return index
+        return 0
 
     def _goal_rank(self, goal: Triple, subst: Subst) -> tuple[int, int]:
         pred = self.deref(goal.p, subst)
@@ -1249,6 +1421,8 @@ class Engine:
         return (2, variables)
 
     def deref(self, t: Term, subst: Subst) -> Term:
+        if not isinstance(t, Var):
+            return t
         seen: set[str] = set()
         while isinstance(t, Var) and t.name in subst and t.name not in seen:
             seen.add(t.name)
@@ -1256,6 +1430,8 @@ class Engine:
         return t
 
     def apply_subst(self, t: Term, subst: Subst) -> Term:
+        if not self._term_needs_substitution(t):
+            return t
         t = self.deref(t, subst)
         if isinstance(t, ListTerm):
             return ListTerm(self.apply_subst(e, subst) for e in t.elems)
@@ -1314,10 +1490,10 @@ class Engine:
         return Triple(convert(tr.s), convert(tr.p), convert(tr.o))
 
     def unify_triple(self, a: Triple, b: Triple, subst: Subst) -> Subst | None:
-        s1 = self.unify_term(a.s, b.s, subst)
+        s1 = self.unify_term(a.p, b.p, subst)
         if s1 is None:
             return None
-        s2 = self.unify_term(a.p, b.p, s1)
+        s2 = self.unify_term(a.s, b.s, s1)
         if s2 is None:
             return None
         return self.unify_term(a.o, b.o, s2)
@@ -1330,17 +1506,15 @@ class Engine:
         if isinstance(b, Var):
             return self._bind(b, a, subst)
         if isinstance(a, Iri) and a.value == RDF_NIL and isinstance(b, ListTerm) and not b.elems:
-            return dict(subst)
+            return subst
         if isinstance(b, Iri) and b.value == RDF_NIL and isinstance(a, ListTerm) and not a.elems:
-            return dict(subst)
+            return subst
         if isinstance(a, Literal) and isinstance(b, Literal):
-            if self.literal_equivalent(a, b):
-                return dict(subst)
-            return None
+            return subst if self.literal_equivalent(a, b) else None
         if isinstance(a, ListTerm) and isinstance(b, ListTerm):
             if len(a.elems) != len(b.elems):
                 return None
-            cur = dict(subst)
+            cur = subst
             for x, y in zip(a.elems, b.elems):
                 cur = self.unify_term(x, y, cur)
                 if cur is None:
@@ -1357,7 +1531,7 @@ class Engine:
         if isinstance(a, OpenListTerm) and isinstance(b, ListTerm):
             if len(b.elems) < len(a.prefix):
                 return None
-            cur = dict(subst)
+            cur = subst
             for x, y in zip(a.prefix, b.elems):
                 cur = self.unify_term(x, y, cur)
                 if cur is None:
@@ -1367,7 +1541,7 @@ class Engine:
             return self.unify_term(b, a, subst)
         if isinstance(a, OpenListTerm) and isinstance(b, OpenListTerm):
             common = min(len(a.prefix), len(b.prefix))
-            cur = dict(subst)
+            cur = subst
             for x, y in zip(a.prefix[:common], b.prefix[:common]):
                 cur = self.unify_term(x, y, cur)
                 if cur is None:
@@ -1384,11 +1558,11 @@ class Engine:
             if len(a.triples) != len(b.triples):
                 return None
             return self._unify_graphs(list(a.triples), list(b.triples), subst)
-        return dict(subst) if a == b else None
+        return subst if a == b else None
 
     def _unify_graphs(self, left: list[Triple], right: list[Triple], subst: Subst) -> Subst | None:
         if not left:
-            return dict(subst) if not right else None
+            return subst if not right else None
         first = left[0]
         for i, candidate in enumerate(right):
             nxt = self.unify_triple(first, candidate, subst)
@@ -1401,7 +1575,7 @@ class Engine:
 
     def _bind(self, var: Var, value: Term, subst: Subst) -> Subst | None:
         if isinstance(value, Var) and value.name == var.name:
-            return dict(subst)
+            return subst
         if self._occurs(var.name, value, subst):
             return None
         out = dict(subst)
@@ -1410,6 +1584,8 @@ class Engine:
 
     def _occurs(self, name: str, value: Term, subst: Subst) -> bool:
         value = self.deref(value, subst)
+        if not self._term_needs_substitution(value):
+            return False
         if isinstance(value, Var):
             return value.name == name
         if isinstance(value, ListTerm):
@@ -1498,9 +1674,10 @@ class Engine:
         )
 
     def rdf_collection_to_list(self, node: Term) -> list[Term] | None:
-        # Literals and formulas can never be rdf:first/rdf:rest subjects, so
-        # bail out immediately instead of paying for a facts scan below.
-        if isinstance(node, (Literal, GraphTerm)):
+        # Only RDF resources can head an explicit rdf:first/rdf:rest chain.
+        # In particular, an unbound variable here means a list builtin should
+        # use its constructive mode, not scan the complete fact set.
+        if not isinstance(node, (Iri, Blank, ListTerm)):
             return None
         self._ensure_fact_indexes_current()
         seen: set[Term] = set()

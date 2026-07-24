@@ -262,9 +262,10 @@ N-Quads, Turtle, and TriG manifests are enabled.
 See the
 [performance report](https://github.com/eyereasoner/pyling/blob/main/PERFORMANCE.md)
 for measured comparisons with
-[Eyeling](https://github.com/eyereasoner/eyeling) and FuXi, including which runs
-completed, whether their outputs were comparable, the benchmark method, and
-reproduction commands.
+[Eyeling](https://github.com/eyereasoner/eyeling), FuXi, and
+[`owlrl`](https://pypi.org/project/owlrl/), including which runs completed,
+whether their outputs were comparable, the benchmark method, and reproduction
+commands.
 
 ```bash
 npm run perf -- --list

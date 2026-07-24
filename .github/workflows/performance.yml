@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   benchmark-comparison:
-    name: pyling vs Eyeling and FuXi
+    name: pyling vs Eyeling, FuXi, and owlrl
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -32,7 +32,7 @@ jobs:
           cache: pip
 
       - name: Install package
-        run: python -m pip install -e ".[test]"
+        run: python -m pip install -e ".[test,performance]"
 
       - name: Run examples comparison
         run: >
@@ -59,12 +59,29 @@ jobs:
           --iterations=1
           --warmup=0
           --max-iterations=100000
-          --timeout=10
+          --timeout=60
           --allow-failures
           --require-reasoner=pyling
           --require-reasoner=eyeling
           --require-reasoner=fuxi
           --report-dir=performance-reports/eyeling-examples
+          --markdown
+
+      - name: Run MobiBench OWL 2 RL comparison
+        run: >
+          python tools/compare_reasoners.py
+          --suite=owl-mobibench
+          --mobibench-limit=0
+          --reasoner=pyling,fuxi,owlrl
+          --iterations=1
+          --warmup=0
+          --max-iterations=100
+          --timeout=600
+          --allow-failures
+          --require-reasoner=pyling
+          --require-reasoner=fuxi
+          --require-reasoner=owlrl
+          --report-dir=performance-reports/owl-mobibench
           --markdown
 
       - name: Write job summary
@@ -75,6 +92,8 @@ jobs:
             cat performance-reports/examples/report.md || true
             echo "## Eyeling examples"
             cat performance-reports/eyeling-examples/report.md || true
+            echo "## MobiBench OWL 2 RL"
+            cat performance-reports/owl-mobibench/report.md || true
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload performance reports

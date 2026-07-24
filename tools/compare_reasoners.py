@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Performance comparison harness for pyling, Eyeling, and FuXi.
+"""Performance comparison harness for pyling, Eyeling, FuXi, and owlrl.
 
 The harness keeps competitors optional: pyling is run in-process, while
-Eyeling and FuXi run in subprocesses so callers can point them at existing
-installations or checkouts without mutating this project.
+Eyeling, FuXi, and owlrl run in subprocesses so callers can point them at
+existing installations or checkouts without mutating this project.
 """
 from __future__ import annotations
 
@@ -45,6 +45,8 @@ class BenchmarkCase:
     source_paths: tuple[Path, ...] = ()
     fuxi_sources: tuple[str, ...] | None = None
     fuxi_mode: str = "n3"
+    owlrl_sources: tuple[str, ...] | None = None
+    owlrl_format: str = "turtle"
     rdf: bool = False
     input_format: str | None = None
     suite: str = "examples"
@@ -139,6 +141,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--fuxi-venv", default=os.environ.get("FUXI_VENV", str(DEFAULT_FUXI_VENV)), help="venv path used for lazy FuXi installation")
     parser.add_argument("--fuxi-package", default=os.environ.get("FUXI_PACKAGE", DEFAULT_FUXI_PACKAGE), help="pip requirement installed into the lazy FuXi venv")
     parser.add_argument("--no-install-fuxi", action="store_true", help="skip lazy FuXi installation and report it as unavailable")
+    parser.add_argument("--owlrl-python", default=os.environ.get("OWLRL_PYTHON", sys.executable), help="Python executable with owlrl installed")
     parser.add_argument("--eyeling-node", default=os.environ.get("EYELING_NODE", "node"), help="Node.js executable used for Eyeling")
     parser.add_argument("--eyeling-path", default=os.environ.get("EYELING_PATH", str(DEFAULT_EYELING_PATH)), help="Eyeling package checkout or installation path")
     return parser.parse_args(argv)
@@ -235,6 +238,7 @@ def discover_mobibench_cases(args: argparse.Namespace) -> list[BenchmarkCase]:
                     (rules, premise),
                     fuxi_sources=(premise,),
                     fuxi_mode="owl",
+                    owlrl_sources=(premise,),
                     suite="owl-mobibench",
                 )
             )
@@ -334,6 +338,7 @@ def discover_reasoners(args: argparse.Namespace) -> list[Reasoner]:
         Reasoner("pyling", "pyling in-process", pyling_available, run_pyling_once),
         Reasoner("eyeling", "Eyeling subprocess", lambda: eyeling_available(args), run_eyeling_once),
         Reasoner("fuxi", "FuXi subprocess", lambda: fuxi_available(args), run_fuxi_once),
+        Reasoner("owlrl", "owlrl subprocess", lambda: owlrl_available(args), run_owlrl_once),
     ]
 
 
@@ -361,6 +366,23 @@ def fuxi_available(args: argparse.Namespace) -> tuple[bool, str | None]:
         return False, f"Python executable not found: {args.fuxi_python}"
     if proc.returncode != 0:
         return False, one_line(proc.stderr or proc.stdout or "FuXi import failed")
+    return True, None
+
+
+def owlrl_available(args: argparse.Namespace) -> tuple[bool, str | None]:
+    code = "import owlrl; print(getattr(owlrl, '__version__', 'unknown'))"
+    try:
+        proc = subprocess.run(
+            [args.owlrl_python, "-c", code],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=min(args.timeout, 10.0),
+        )
+    except FileNotFoundError:
+        return False, f"Python executable not found: {args.owlrl_python}"
+    if proc.returncode != 0:
+        return False, one_line(proc.stderr or proc.stdout or "owlrl import failed")
     return True, None
 
 
@@ -394,6 +416,18 @@ def run_benchmarks(cases: list[BenchmarkCase], reasoners: list[Reasoner], args: 
     results: list[BenchmarkResult] = []
     for case in cases:
         for reasoner in reasoners:
+            if reasoner.id == "owlrl" and case.owlrl_sources is None:
+                results.append(
+                    BenchmarkResult(
+                        case.id,
+                        case.label,
+                        reasoner.id,
+                        "skipped",
+                        [],
+                        "case does not provide an RDF graph for the OWL 2 RL profile",
+                    )
+                )
+                continue
             if reasoner.id == "fuxi":
                 try:
                     ensure = ensure_fuxi_for_run(args)
@@ -723,6 +757,65 @@ print(json.dumps({
     "facts": len(graph),
     "derived": len(inferred) if inferred is not None else None,
     "closure_chars": len(inferred.serialize(format="nt")) if inferred is not None else None,
+}))
+"""
+
+
+def run_owlrl_once(case: BenchmarkCase, args: argparse.Namespace) -> Sample:
+    sources = case.owlrl_sources if case.owlrl_sources is not None else case.sources
+    with tempfile.NamedTemporaryFile("w", suffix=".ttl", encoding="utf8", delete=False) as temp:
+        temp.write("\n\n".join(sources))
+        temp_path = temp.name
+    try:
+        proc = subprocess.run(
+            [args.owlrl_python, "-c", OWLRL_RUNNER, temp_path, case.owlrl_format],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=args.timeout,
+        )
+    finally:
+        try:
+            Path(temp_path).unlink()
+        except OSError:
+            pass
+    if proc.returncode != 0:
+        raise RuntimeError(one_line(proc.stderr or proc.stdout or f"owlrl exited {proc.returncode}"))
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"owlrl returned non-JSON output: {one_line(proc.stdout)}") from exc
+    return Sample(
+        total_ms=float(payload["total_ms"]),
+        facts=payload.get("facts"),
+        derived=payload.get("derived"),
+        closure_chars=payload.get("closure_chars"),
+    )
+
+
+OWLRL_RUNNER = r"""
+import json
+import sys
+import time
+from pathlib import Path
+
+from owlrl import DeductiveClosure, OWLRL_Semantics
+from rdflib import Graph
+
+path = Path(sys.argv[1])
+input_format = sys.argv[2]
+source = path.read_text(encoding="utf8")
+start = time.perf_counter()
+graph = Graph()
+graph.parse(data=source, format=input_format, publicID=str(path.resolve()))
+initial = len(graph)
+DeductiveClosure(OWLRL_Semantics).expand(graph)
+elapsed = (time.perf_counter() - start) * 1000
+print(json.dumps({
+    "total_ms": elapsed,
+    "facts": len(graph),
+    "derived": len(graph) - initial,
+    "closure_chars": len(graph.serialize(format="nt")),
 }))
 """
 
