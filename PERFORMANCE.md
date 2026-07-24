@@ -57,16 +57,16 @@ Eyeling's independent golden-output test also passed all 224 examples.
 
 | Metric over 222 normally returning cases | pyling | Eyeling |
 |---|---:|---:|
-| Median per case | 9.63 ms | 18.27 ms |
-| Arithmetic mean | 381.73 ms | 75.60 ms |
-| Total measured time | 84.75 s | 16.78 s |
-| Slowest case | 14.45 s | 2.38 s |
+| Median per case | 9.68 ms | 15.99 ms |
+| Arithmetic mean | 312.15 ms | 67.63 ms |
+| Total measured time | 69.30 s | 15.01 s |
+| Slowest case | 16.57 s | 2.29 s |
 
 Among the 217 cases with exact counts in the broad run:
 
-- Pyling was faster on 150 cases.
-- Eyeling was faster on 67 cases.
-- The median Pyling/Eyeling ratio was 0.594, making Pyling about 1.68 times
+- Pyling was faster on 147 cases.
+- Eyeling was faster on 75 cases.
+- The median Pyling/Eyeling ratio was 0.624, making Pyling about 1.60 times
   faster on the typical exact-count example.
 
 The total runtime favors Eyeling because a small number of large recursive
@@ -74,13 +74,14 @@ programs dominate the aggregate.
 
 | Representative exact-count example | pyling | Eyeling | Interpretation |
 |---|---:|---:|---|
-| Socrates | 1.33 ms | 5.32 ms | Pyling 4.0x faster |
-| Fibonacci | 2.88 s | 1.30 s | Pyling 2.2x slower |
-| Deep taxonomy, 100,000 | 14.45 s | 2.38 s | Pyling 6.1x slower |
-| Goldbach through 1,000 | 12.67 s | 1.52 s | Pyling 8.3x slower |
-| Path discovery | 3.26 s | 0.92 s | Pyling 3.6x slower |
-| Takeuchi | 8.90 s | 1.08 s | Pyling 8.2x slower |
-| Collatz through 1,000 | 7.28 s | 0.56 s | Pyling 13.0x slower |
+| Socrates | 1.24 ms | 4.63 ms | Pyling 3.7x faster |
+| Fibonacci | 3.13 s | 1.14 s | Pyling 2.7x slower |
+| Deep taxonomy, 100,000 | 13.79 s | 2.29 s | Pyling 6.0x slower |
+| Goldbach through 1,000 | 3.43 s | 1.38 s | Pyling 2.5x slower |
+| Path discovery | 3.12 s | 0.85 s | Pyling 3.7x slower |
+| Takeuchi | 10.50 s | 0.82 s | Pyling 12.8x slower |
+| Collatz through 1,000 | 1.79 s | 0.52 s | Pyling 3.4x slower |
+| Kaprekar 6174 | 16.57 s | 1.92 s | Pyling 8.6x slower |
 
 **Interpretation:** Pyling has lower overhead on small programs. Eyeling scales
 better on several deep, recursive, or constructive workloads.
@@ -94,12 +95,23 @@ Eyeling:
 - ordinary goals remain left-to-right while only blocked builtins are deferred;
 - single-premise rules use an agenda even when unrelated backward rules exist;
 - ground terms and no-op unifications are reused instead of copied.
+- backward DFS now uses one mutable substitution with an undo trail, avoiding
+  full substitution copies on each successful unification branch;
+- builtin calls on large proof states return delta bindings, while scoped
+  formula builtins and small proof states keep the full surrounding
+  substitution for compatibility.
 
 Compared with the pre-optimization broad run, path discovery decreased from
-15.19 to 3.26 seconds and Takeuchi from 20.30 to 8.90 seconds. Recursive
-arithmetic still exposes the main remaining gap: Eyeling uses numeric term IDs
-and one mutable substitution with a rollback trail across its complete DFS.
-Pyling still standardizes Python term objects and copies branch substitutions.
+15.19 to 3.12 seconds, Collatz from 8.08 to 1.79 seconds, and Goldbach from
+12.67 to 3.43 seconds. The trail-backed DFS also reduced the broad Pyling total
+from 84.75 to 69.30 seconds compared with the previous optimized run.
+
+The remaining large gaps are concentrated in constructive search and numeric
+workloads such as Kaprekar, Takeuchi, deep taxonomy, and transitive closure.
+Eyeling still benefits from interned numeric term IDs and lower object-allocation
+overhead in JavaScript. Pyling now avoids the largest substitution-copy cost,
+but it still allocates Python term objects for standardized rules, applied
+triples, and list construction.
 
 ## Focused comparison with FuXi
 

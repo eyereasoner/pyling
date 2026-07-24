@@ -290,6 +290,21 @@ def test_mutually_recursive_backward_rules_reach_fact_base_case():
     assert ":result :is :Post ." in out
 
 
+def test_backward_loop_state_is_restored_before_sibling_goals():
+    out = reason('''
+@prefix : <http://example.org/> .
+:a :edge :b.
+:b :edge :c.
+{ ?x :reachable ?y. } <= { ?x :edge ?y. }.
+{ ?x :reachable ?z. } <= { ?x :edge ?y. ?y :reachable ?z. }.
+{
+  :a :reachable :b.
+  :a :reachable :c.
+} => { :result :ok true. }.
+''')
+    assert ":result :ok true ." in out
+
+
 def test_large_integer_exponentiation_and_remainder_are_exact():
     out = reason('''
 @prefix : <http://example.org/> .

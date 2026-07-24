@@ -1132,12 +1132,7 @@ class Engine:
         allow_reorder: bool = True,
         _visited: frozenset[str] | None = None,
     ) -> Iterator[Subst]:
-        """Prove goals using an explicit DFS stack.
-
-        Backward proofs can be thousands of goals deep. Keeping this traversal
-        iterative matches Eyeling and avoids treating conjunction length as
-        Python call-stack depth.
-        """
+        """Prove goals with iterative DFS and trail-backed substitutions."""
         goal_memo_key: str | None = None
         goal_memo: dict[str, list[Subst]] | None = None
         if depth == 0 and not _visited and not subst:
@@ -1149,9 +1144,10 @@ class Engine:
                     yield dict(answer)
                 return
 
-        State = tuple[list[Any], Subst, int, bool, frozenset[str]]
-        visited_reset = object()
-        stack: list[State] = [(list(goals), dict(subst), depth, allow_reorder, _visited or frozenset())]
+        subst_mut: Subst = dict(subst)
+        trail: list[str] = []
+        visited_counts: dict[str, int] = {key: 1 for key in (_visited or frozenset())}
+        visited_trail: list[str] = []
         answer_vars = set(subst)
 
         def collect_vars(term: Term, target: set[str]) -> None:
@@ -1195,51 +1191,311 @@ class Engine:
             # remain identity-bearing terms and must not be collapsed.
             return json.dumps(canonicalize(primitive), sort_keys=True, default=str)
 
+        def undo_to(mark: int) -> None:
+            for name in reversed(trail[mark:]):
+                subst_mut.pop(name, None)
+            del trail[mark:]
+
+        def push_visited(key: str) -> None:
+            visited_counts[key] = visited_counts.get(key, 0) + 1
+            visited_trail.append(key)
+
+        def undo_visited_to(mark: int) -> None:
+            for key in reversed(visited_trail[mark:]):
+                count = visited_counts.get(key, 0)
+                if count <= 1:
+                    visited_counts.pop(key, None)
+                else:
+                    visited_counts[key] = count - 1
+            del visited_trail[mark:]
+
+        def occurs(name: str, value: Term) -> bool:
+            value = self.deref(value, subst_mut)
+            if not self._term_needs_substitution(value):
+                return False
+            if isinstance(value, Var):
+                return value.name == name
+            if isinstance(value, ListTerm):
+                return any(occurs(name, item) for item in value.elems)
+            if isinstance(value, OpenListTerm):
+                return (
+                    value.tail_var == name
+                    or any(occurs(name, item) for item in value.prefix)
+                    or occurs(name, Var(value.tail_var))
+                )
+            if isinstance(value, GraphTerm):
+                return any(
+                    occurs(name, triple.s) or occurs(name, triple.p) or occurs(name, triple.o)
+                    for triple in value.triples
+                )
+            return False
+
+        def bind_var(var: Var, value: Term) -> bool:
+            if var.name in subst_mut:
+                return unify_term_trail(subst_mut[var.name], value)
+            if isinstance(value, Var) and value.name == var.name:
+                return True
+            if occurs(var.name, value):
+                return False
+            subst_mut[var.name] = value
+            trail.append(var.name)
+            return True
+
+        def unify_graphs_trail(left: tuple[Triple, ...], right: tuple[Triple, ...]) -> bool:
+            if len(left) != len(right):
+                return False
+            used = [False] * len(right)
+
+            def step(index: int) -> bool:
+                if index >= len(left):
+                    return True
+                current = left[index]
+                for candidate_index, candidate in enumerate(right):
+                    if used[candidate_index]:
+                        continue
+                    if (
+                        isinstance(current.p, Iri)
+                        and isinstance(candidate.p, Iri)
+                        and current.p.value != candidate.p.value
+                    ):
+                        continue
+                    mark = len(trail)
+                    if unify_triple_trail(current, candidate):
+                        used[candidate_index] = True
+                        if step(index + 1):
+                            return True
+                        used[candidate_index] = False
+                    undo_to(mark)
+                return False
+
+            return step(0)
+
+        def unify_term_trail(a: Term, b: Term) -> bool:
+            a = self.apply_subst(a, subst_mut)
+            b = self.apply_subst(b, subst_mut)
+            if isinstance(a, Var):
+                return bind_var(a, b)
+            if isinstance(b, Var):
+                return bind_var(b, a)
+            if isinstance(a, Iri) and a.value == RDF_NIL and isinstance(b, ListTerm) and not b.elems:
+                return True
+            if isinstance(b, Iri) and b.value == RDF_NIL and isinstance(a, ListTerm) and not a.elems:
+                return True
+            if a is b or a == b:
+                return True
+            if isinstance(a, Literal) and isinstance(b, Literal):
+                return self.literal_equivalent(a, b)
+            if isinstance(a, ListTerm) and isinstance(b, ListTerm):
+                if len(a.elems) != len(b.elems):
+                    return False
+                return all(unify_term_trail(x, y) for x, y in zip(a.elems, b.elems))
+            if isinstance(a, ListTerm):
+                recovered = self.rdf_collection_to_list(b)
+                if recovered is not None:
+                    return unify_term_trail(a, ListTerm(recovered))
+            if isinstance(b, ListTerm):
+                recovered = self.rdf_collection_to_list(a)
+                if recovered is not None:
+                    return unify_term_trail(ListTerm(recovered), b)
+            if isinstance(a, OpenListTerm) and isinstance(b, ListTerm):
+                if len(b.elems) < len(a.prefix):
+                    return False
+                for x, y in zip(a.prefix, b.elems):
+                    if not unify_term_trail(x, y):
+                        return False
+                return bind_var(Var(a.tail_var), ListTerm(b.elems[len(a.prefix):]))
+            if isinstance(b, OpenListTerm) and isinstance(a, ListTerm):
+                return unify_term_trail(b, a)
+            if isinstance(a, OpenListTerm) and isinstance(b, OpenListTerm):
+                common = min(len(a.prefix), len(b.prefix))
+                for x, y in zip(a.prefix[:common], b.prefix[:common]):
+                    if not unify_term_trail(x, y):
+                        return False
+                if len(a.prefix) == len(b.prefix):
+                    return bind_var(Var(a.tail_var), Var(b.tail_var))
+                if len(a.prefix) < len(b.prefix):
+                    return bind_var(Var(a.tail_var), OpenListTerm(b.prefix[common:], b.tail_var))
+                return bind_var(Var(b.tail_var), OpenListTerm(a.prefix[common:], a.tail_var))
+            if isinstance(a, GraphTerm) and isinstance(b, GraphTerm):
+                return unify_graphs_trail(a.triples, b.triples)
+            return False
+
+        def unify_triple_trail(a: Triple, b: Triple) -> bool:
+            return (
+                unify_term_trail(a.p, b.p)
+                and unify_term_trail(a.s, b.s)
+                and unify_term_trail(a.o, b.o)
+            )
+
+        def apply_delta(delta: Subst) -> bool:
+            for name, value in list(delta.items()):
+                if not unify_term_trail(Var(name), value):
+                    return False
+            return True
+
+        def answer_from_current() -> Subst:
+            answer: Subst = {}
+            for name in answer_vars:
+                value = self.apply_subst(Var(name), subst_mut)
+                if not (isinstance(value, Var) and value.name == name):
+                    answer[name] = value
+            return answer
+
+        visited_reset = object()
+        Frame = dict[str, Any]
+        stack: list[Frame] = [
+            {"kind": "node", "goals": list(goals), "depth": depth, "reorder": allow_reorder}
+        ]
         while stack:
-            goals_now, subst_now, depth_now, reorder_now, visited = stack.pop()
+            frame = stack.pop()
+            kind = frame["kind"]
+            if kind == "undo":
+                undo_to(frame["subst_mark"])
+                undo_visited_to(frame["visited_mark"])
+                continue
+            if kind == "delta_iter":
+                deltas = frame["deltas"]
+                while frame["index"] < len(deltas):
+                    delta = deltas[frame["index"]]
+                    frame["index"] += 1
+                    mark = len(trail)
+                    if not apply_delta(delta):
+                        undo_to(mark)
+                        continue
+                    if not frame["rest"]:
+                        answer = answer_from_current()
+                        if goal_memo_key is not None:
+                            completed_answers.append(dict(answer))
+                        yield answer
+                        undo_to(mark)
+                        continue
+                    stack.append(frame)
+                    stack.append({"kind": "undo", "subst_mark": mark, "visited_mark": len(visited_trail)})
+                    stack.append({
+                        "kind": "node",
+                        "goals": frame["rest"],
+                        "depth": frame["depth"] + 1,
+                        "reorder": frame["reorder"],
+                    })
+                    break
+                continue
+            if kind in {"fact_iter", "rule_fact_iter", "memo_answer_iter"}:
+                items = frame["items"]
+                while frame["index"] < len(items):
+                    item = items[frame["index"]]
+                    frame["index"] += 1
+                    mark = len(trail)
+                    if not unify_triple_trail(frame["goal"], item):
+                        undo_to(mark)
+                        continue
+                    if not frame["rest"]:
+                        answer = answer_from_current()
+                        if goal_memo_key is not None:
+                            completed_answers.append(dict(answer))
+                        yield answer
+                        undo_to(mark)
+                        continue
+                    stack.append(frame)
+                    stack.append({"kind": "undo", "subst_mark": mark, "visited_mark": len(visited_trail)})
+                    stack.append({
+                        "kind": "node",
+                        "goals": frame["rest"],
+                        "depth": frame["depth"] + 1,
+                        "reorder": frame["reorder"],
+                    })
+                    break
+                continue
+            if kind == "rule_iter":
+                rules = frame["rules"]
+                while frame["index"] < len(rules):
+                    rule = rules[frame["index"]]
+                    frame["index"] += 1
+                    if len(rule.premise) != 1:
+                        continue
+                    std = self.standardize_apart(rule)
+                    mark = len(trail)
+                    if not unify_triple_trail(frame["goal"], std.premise[0]):
+                        undo_to(mark)
+                        continue
+                    body = list(std.conclusion)
+                    if frame["goal_was_visited"] and any(
+                        goal_key(self.apply_subst_triple(premise, subst_mut)) in visited_counts
+                        for premise in body
+                    ):
+                        undo_to(mark)
+                        continue
+                    visited_mark = len(visited_trail)
+                    push_visited(frame["goal_key"])
+                    stack.append(frame)
+                    stack.append({"kind": "undo", "subst_mark": mark, "visited_mark": visited_mark})
+                    next_goals = body + frame["rest"]
+                    if frame["rest"]:
+                        next_goals = body + [(visited_reset, visited_mark)] + frame["rest"]
+                    stack.append({
+                        "kind": "node",
+                        "goals": next_goals,
+                        "depth": frame["depth"] + 1,
+                        "reorder": False,
+                    })
+                    break
+                continue
+
+            goals_now = frame["goals"]
+            depth_now = frame["depth"]
+            reorder_now = frame["reorder"]
             if depth_now > self.max_depth:
                 continue
             if not goals_now:
-                answer: Subst = {}
-                for name in answer_vars:
-                    value = self.apply_subst(Var(name), subst_now)
-                    if not (isinstance(value, Var) and value.name == name):
-                        answer[name] = value
+                answer = answer_from_current()
                 if goal_memo_key is not None:
                     completed_answers.append(dict(answer))
                 yield answer
                 continue
             if isinstance(goals_now[0], tuple) and goals_now[0][0] is visited_reset:
-                remaining = goals_now[1:]
-                needed = set(answer_vars)
-                for pending in remaining:
-                    if not isinstance(pending, Triple):
-                        continue
-                    collect_vars(pending.s, needed)
-                    collect_vars(pending.p, needed)
-                    collect_vars(pending.o, needed)
-                compacted: Subst = {}
-                for name in needed:
-                    value = self.apply_subst(Var(name), subst_now)
-                    if not (isinstance(value, Var) and value.name == name):
-                        compacted[name] = value
-                stack.append((remaining, compacted, depth_now, reorder_now, goals_now[0][1]))
+                undo_visited_to(goals_now[0][1])
+                stack.append({
+                    "kind": "node",
+                    "goals": goals_now[1:],
+                    "depth": depth_now,
+                    "reorder": reorder_now,
+                })
                 continue
 
-            selected = self._select_goal_index(goals_now, subst_now) if reorder_now else 0
-            first = self.apply_subst_triple(goals_now[selected], subst_now)
+            selected = self._select_goal_index(goals_now, subst_mut) if reorder_now else 0
+            first = self.apply_subst_triple(goals_now[selected], subst_mut)
             rest = goals_now[:selected] + goals_now[selected + 1:]
-            successors: list[State] = []
 
             # A registered builtin owns its predicate and does not fall through
             # to ordinary facts or backward rules.
             if isinstance(first.p, Iri):
                 handler = get_builtin(first.p.value)
                 if handler is not None:
-                    ctx = BuiltinContext(first, subst_now, self)
-                    for nxt in handler(ctx):
-                        successors.append((rest, nxt, depth_now + 1, reorder_now, visited))
-                    stack.extend(reversed(successors))
+                    # The selected goal is already substitution-applied. Match
+                    # Eyeling's hot path: builtins return only the new bindings
+                    # introduced while evaluating this goal, not a full copy of
+                    # the current proof state.
+                    builtin_subst = (
+                        subst_mut
+                        if len(subst_mut) <= 64
+                        or first.p.value in {
+                            LOG_NS + "collectAllIn",
+                            LOG_NS + "forAllIn",
+                            LOG_NS + "includes",
+                            LOG_NS + "notIncludes",
+                        }
+                        else {}
+                    )
+                    ctx = BuiltinContext(first, builtin_subst, self)
+                    deltas = list(handler(ctx))
+                    if deltas:
+                        stack.append({
+                            "kind": "delta_iter",
+                            "deltas": deltas,
+                            "index": 0,
+                            "rest": rest,
+                            "depth": depth_now,
+                            "reorder": reorder_now,
+                        })
                     continue
 
                 if first.p.value in {RDF_FIRST, RDF_REST}:
@@ -1248,11 +1504,20 @@ class Engine:
                         for term in (fact.s, fact.p, fact.o):
                             if isinstance(term, ListTerm) and term.elems:
                                 seen_lists.add(term)
+                    synthetic: list[Triple] = []
                     for collection in seen_lists:
                         obj = collection.elems[0] if first.p.value == RDF_FIRST else ListTerm(collection.elems[1:])
-                        nxt = self.unify_triple(first, Triple(collection, first.p, obj), subst_now)
-                        if nxt is not None:
-                            successors.append((rest, nxt, depth_now + 1, reorder_now, visited))
+                        synthetic.append(Triple(collection, first.p, obj))
+                    if synthetic:
+                        stack.append({
+                            "kind": "fact_iter",
+                            "items": synthetic,
+                            "index": 0,
+                            "goal": first,
+                            "rest": rest,
+                            "depth": depth_now,
+                            "reorder": reorder_now,
+                        })
 
             # Predicate-scoped memoization remains opt-in via log:memoize.
             if isinstance(first.p, Iri) and first.p.value in self._memoized_predicates:
@@ -1264,68 +1529,97 @@ class Engine:
                         if bottom_up_entry is not None:
                             memo_entry = bottom_up_entry
                     if memo_entry["complete"]:
-                        for answer in memo_entry["answers"]:
-                            nxt = self.unify_triple(first, answer, subst_now)
-                            if nxt is not None:
-                                successors.append((rest, nxt, depth_now + 1, reorder_now, visited))
-                        stack.extend(reversed(successors))
+                        stack.append({
+                            "kind": "memo_answer_iter",
+                            "items": memo_entry["answers"],
+                            "index": 0,
+                            "goal": first,
+                            "rest": rest,
+                            "depth": depth_now,
+                            "reorder": reorder_now,
+                        })
                         continue
                     if not memo_entry["computing"]:
                         memo_entry["computing"] = True
+                        memo_successors: list[Subst] = []
                         try:
-                            for nxt in self.solve([first], subst_now, depth_now + 1, reorder_now, visited):
+                            for nxt in self.solve(
+                                [first],
+                                {},
+                                depth_now + 1,
+                                reorder_now,
+                                frozenset(visited_counts),
+                            ):
                                 self._store_predicate_memo_answer(memo_entry, first, nxt)
-                                successors.append((rest, nxt, depth_now + 1, reorder_now, visited))
+                                memo_successors.append(nxt)
                         finally:
                             memo_entry["computing"] = False
                             if memo_entry["unsafe"]:
                                 table.pop(memo_key, None)
                             else:
                                 memo_entry["complete"] = True
-                        stack.extend(reversed(successors))
+                        if memo_successors:
+                            stack.append({
+                                "kind": "delta_iter",
+                                "deltas": memo_successors,
+                                "index": 0,
+                                "rest": rest,
+                                "depth": depth_now,
+                                "reorder": reorder_now,
+                            })
                         continue
-
-            # Facts are indexed by their bound positions.
-            for fact in self._candidate_facts(first):
-                nxt = self.unify_triple(first, fact, subst_now)
-                if nxt is not None:
-                    successors.append((rest, nxt, depth_now + 1, reorder_now, visited))
-            for rule_fact in self._candidate_rule_facts(first):
-                nxt = self.unify_triple(first, rule_fact, subst_now)
-                if nxt is not None:
-                    successors.append((rest, nxt, depth_now + 1, reorder_now, visited))
 
             # On re-entering an ancestor goal, reject only rules whose body
             # immediately re-enters that ancestor chain. This is Eyeling's
             # inexpensive guard for direct and mutual recursion.
             first_key = goal_key(first)
-            goal_was_visited = first_key in visited
+            goal_was_visited = first_key in visited_counts
             # Eyeling only indexes/applies backward rules for a ground IRI
             # predicate. Variable-predicate goals range over facts.
-            candidate_rules: Iterable[Rule]
+            candidate_rules: list[Rule]
             if isinstance(first.p, Iri):
-                candidate_rules = (
+                candidate_rules = [
                     *self._backward_rules_by_pred.get(first.p.value, ()),
                     *self._wild_backward_rules,
-                )
+                ]
             else:
-                candidate_rules = ()
-            for rule in candidate_rules:
-                if len(rule.premise) != 1:
-                    continue
-                std = self.standardize_apart(rule)
-                nxt = self.unify_triple(first, std.premise[0], subst_now)
-                if nxt is None:
-                    continue
-                body = list(std.conclusion)
-                if goal_was_visited and any(
-                    goal_key(self.apply_subst_triple(premise, nxt)) in visited for premise in body
-                ):
-                    continue
-                reset_marker = (visited_reset, visited)
-                successors.append((body + [reset_marker] + rest, nxt, depth_now + 1, False, visited | {first_key}))
+                candidate_rules = []
 
-            stack.extend(reversed(successors))
+            # Push in reverse processing order so facts are explored first, as
+            # in the previous Python solver.
+            if candidate_rules:
+                stack.append({
+                    "kind": "rule_iter",
+                    "rules": candidate_rules,
+                    "index": 0,
+                    "goal": first,
+                    "goal_key": first_key,
+                    "goal_was_visited": goal_was_visited,
+                    "rest": rest,
+                    "depth": depth_now,
+                })
+            rule_facts = list(self._candidate_rule_facts(first))
+            if rule_facts:
+                stack.append({
+                    "kind": "rule_fact_iter",
+                    "items": rule_facts,
+                    "index": 0,
+                    "goal": first,
+                    "rest": rest,
+                    "depth": depth_now,
+                    "reorder": reorder_now,
+                })
+            facts = list(self._candidate_facts(first))
+            if facts:
+                stack.append({
+                    "kind": "fact_iter",
+                    "items": facts,
+                    "index": 0,
+                    "goal": first,
+                    "rest": rest,
+                    "depth": depth_now,
+                    "reorder": reorder_now,
+                })
 
         if goal_memo is not None and goal_memo_key is not None:
             goal_memo[goal_memo_key] = completed_answers
