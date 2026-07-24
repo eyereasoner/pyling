@@ -5,6 +5,35 @@ All notable changes to pyling will be documented in this file.
 The format is based on Keep a Changelog, and this project uses semantic
 versioning while the public package API is still stabilizing.
 
+## [0.1.4]
+
+### Added
+
+- Example-scoped Python builtin modules for the Eyeling `sudoku.n3` and
+  `queens.n3` examples.
+
+### Changed
+
+- Example-specific builtins are no longer part of Pyling's default builtin
+  registry. The CLI and performance harness can load Python builtin modules
+  explicitly with `--builtin`, matching Eyeling's example module pattern.
+- Hot proof paths now avoid full substitution deltas for ordinary builtins,
+  reuse unchanged term/triple objects after substitution, use cheaper
+  visited-goal keys, and keep reusable fact indexes for repeated scoped
+  formula searches.
+- The example-scoped Queens builtin now parallelizes independent first-row
+  branches on platforms with cheap `fork` support, while remaining outside the
+  default builtin registry.
+- The performance harness now counts selected `log:query` output for query-mode
+  examples instead of internal saturated fact stores, matching the examples'
+  rendered output and avoiding implementation-specific count differences.
+- `PERFORMANCE.md` now includes a full per-case table for all Eyeling examples,
+  with network-enabled reruns for the HTTP-dependent cases.
+
+### Fixed
+
+**Full Changelog**: https://github.com/eyereasoner/pyling/compare/0.1.3...0.1.4
+
 ## [0.1.3]
 
 ### Added

@@ -1,4 +1,5 @@
 import asyncio
+import importlib.util
 import re
 import subprocess
 import sys
@@ -17,7 +18,9 @@ from pyling import (
     create_fact_store,
     reason,
     reason_stream,
+    list_builtin_iris,
     register_builtin,
+    register_builtin_module,
     unregister_builtin,
     run_async,
 )
@@ -25,6 +28,18 @@ from pyling.engine import Engine
 from pyling.parser import parse_n3
 
 EX = "http://example.org/"
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def register_example_builtin(name: str) -> set[str]:
+    before = set(list_builtin_iris())
+    path = ROOT / "examples" / "builtin" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"test_builtin_{name}", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    register_builtin_module(module, origin=str(path))
+    return set(list_builtin_iris()) - before
 
 
 def fibonacci_number(n: int) -> int:
@@ -829,6 +844,53 @@ def test_custom_builtin():
         assert ":answer :is 42 ." in out
     finally:
         unregister_builtin(iri)
+
+
+def test_sudoku_builtin_solves_example_puzzle():
+    assert not any(iri.startswith("http://example.org/sudoku-builtin#") for iri in list_builtin_iris())
+    registered = register_example_builtin("sudoku")
+    try:
+        out = reason("""
+@prefix : <http://example.org/> .
+@prefix sb: <http://example.org/sudoku-builtin#> .
+:case :puzzle "100007090030020008009600500005300900010080002600004000300000010040000007007000300" .
+{ :case :puzzle ?p .
+  ?p sb:status "ok" ;
+     sb:solution ?solution ;
+     sb:givens ?givens ;
+     sb:unique true ;
+     sb:rowsCompleteText "OK" .
+}
+=> {
+  :case :solution ?solution ;
+        :givens ?givens ;
+        :checks :passed .
+} .
+""")
+        assert ':case :solution "162857493534129678789643521475312986913586742628794135356478219241935867897261354" .' in out
+        assert ":case :givens 23 ." in out
+        assert ":case :checks :passed ." in out
+    finally:
+        for iri in registered:
+            unregister_builtin(iri)
+
+
+def test_queens_builtin_is_example_scoped():
+    assert not any(iri.startswith("http://example.org/queens#") for iri in list_builtin_iris())
+    registered = register_example_builtin("queens")
+    try:
+        out = reason("""
+@prefix : <http://example.org/queens#> .
+{ (4 1) :count 2 .
+  (4 1) :render ?report .
+}
+=> { :case :count :ok ; :report ?report . } .
+""")
+        assert ":case :count :ok ." in out
+        assert "Total solutions for 4-Queens: 2" in out
+    finally:
+        for iri in registered:
+            unregister_builtin(iri)
 
 
 def test_store_and_run_async(tmp_path):

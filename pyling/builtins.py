@@ -950,7 +950,7 @@ def _log_includes(ctx: BuiltinContext) -> list[Subst]:
         results: list[Subst] = []
         try:
             for candidate in candidates:
-                ctx.engine.facts = list(candidate.triples)  # type: ignore[attr-defined]
+                ctx.engine.facts = ctx.engine.scoped_fact_list(candidate.triples)  # type: ignore[attr-defined]
                 for solution in ctx.engine.solve(list(pattern.triples), ctx.subst):  # type: ignore[attr-defined]
                     if isinstance(scope, Var):
                         bound = ctx.engine.unify_term(ctx.goal.s, candidate, solution)  # type: ignore[attr-defined]
@@ -965,7 +965,7 @@ def _log_includes(ctx: BuiltinContext) -> list[Subst]:
     old_rule_fact_view = ctx.engine._rule_fact_view_active  # type: ignore[attr-defined]
     old_backward_rules = ctx.engine.backward_rules  # type: ignore[attr-defined]
     try:
-        ctx.engine.facts = list(scope.triples)  # type: ignore[attr-defined]
+        ctx.engine.facts = ctx.engine.scoped_fact_list(scope.triples)  # type: ignore[attr-defined]
         # An explicit quoted formula is a closed scope. Live top-level rules
         # remain executable in the ambient engine but are not members of this
         # formula unless represented by log:implies/log:impliedBy triples in it.
@@ -1563,7 +1563,7 @@ def _log_collect_all_in(ctx: BuiltinContext) -> list[Subst]:
     old_backward_rules = ctx.engine.backward_rules  # type: ignore[attr-defined]
     try:
         if isinstance(scope, GraphTerm):
-            ctx.engine.facts = list(scope.triples)  # type: ignore[attr-defined]
+            ctx.engine.facts = ctx.engine.scoped_fact_list(scope.triples)  # type: ignore[attr-defined]
             ctx.engine._rule_fact_view_active = False  # type: ignore[attr-defined]
             ctx.engine.backward_rules = []  # type: ignore[attr-defined]
         for solution in ctx.engine.solve(list(formula.triples), dict(ctx.subst)):  # type: ignore[attr-defined]
@@ -1593,7 +1593,7 @@ def _log_for_all_in(ctx: BuiltinContext) -> list[Subst]:
     old_backward_rules = ctx.engine.backward_rules  # type: ignore[attr-defined]
     try:
         if isinstance(scope, GraphTerm):
-            ctx.engine.facts = list(scope.triples)  # type: ignore[attr-defined]
+            ctx.engine.facts = ctx.engine.scoped_fact_list(scope.triples)  # type: ignore[attr-defined]
             ctx.engine._rule_fact_view_active = False  # type: ignore[attr-defined]
             ctx.engine.backward_rules = []  # type: ignore[attr-defined]
         for solution in ctx.engine.solve(list(generator.triples), dict(ctx.subst)):  # type: ignore[attr-defined]
@@ -1744,6 +1744,5 @@ def _install_defaults() -> None:
         "canonicalLiteral": _dt_canonical,
     }.items():
         register_builtin(DT_NS + local, fn)
-
 
 _install_defaults()

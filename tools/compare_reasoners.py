@@ -51,6 +51,7 @@ class BenchmarkCase:
     input_format: str | None = None
     suite: str = "examples"
     eyeling_builtin_path: Path | None = None
+    pyling_builtin_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -187,6 +188,7 @@ def discover_eyeling_example_cases(args: argparse.Namespace) -> list[BenchmarkCa
     for path in sorted(examples_dir.glob("*.n3")):
         trig_path = examples_dir / "input" / f"{path.stem}.trig"
         builtin_path = examples_dir / "builtin" / f"{path.stem}.js"
+        pyling_builtin_path = ROOT / "examples" / "builtin" / f"{path.stem}.py"
         source_paths = [path]
         sources = [path.read_text(encoding="utf8")]
         if trig_path.exists():
@@ -201,6 +203,7 @@ def discover_eyeling_example_cases(args: argparse.Namespace) -> list[BenchmarkCa
                 rdf=trig_path.exists(),
                 suite="eyeling-examples",
                 eyeling_builtin_path=builtin_path if builtin_path.exists() else None,
+                pyling_builtin_path=pyling_builtin_path if pyling_builtin_path.exists() else None,
             )
         )
     return cases
@@ -547,12 +550,25 @@ def run_pyling_once(case: BenchmarkCase, args: argparse.Namespace) -> Sample:
         max_iterations=args.max_iterations,
     )
     elapsed = (time.perf_counter() - start) * 1000
+    facts, derived = pyling_reported_counts(result)
     return Sample(
         total_ms=elapsed,
-        facts=len(result.facts),
-        derived=len(result.derived),
+        facts=facts,
+        derived=derived,
         closure_chars=len(result.closure_n3),
     )
+
+
+def pyling_reported_counts(result: Any) -> tuple[int, int]:
+    if not getattr(result, "query_mode", False):
+        return len(result.facts), len(result.derived)
+    query_triples = list(result.query_triples)
+    output_triples = [
+        tr for tr in query_triples
+        if getattr(getattr(tr, "p", None), "value", None) == "http://www.w3.org/2000/10/swap/log#outputString"
+    ]
+    selected = output_triples if output_triples else query_triples
+    return len(selected), len(selected)
 
 
 def run_pyling_subprocess_once(case: BenchmarkCase, args: argparse.Namespace) -> Sample:
@@ -563,6 +579,7 @@ def run_pyling_subprocess_once(case: BenchmarkCase, args: argparse.Namespace) ->
         "input_format": case.input_format,
         "include_input_facts": args.include_input_facts,
         "max_iterations": args.max_iterations,
+        "builtin_path": str(case.pyling_builtin_path) if case.pyling_builtin_path else None,
     }
     with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf8", delete=False) as temp:
         json.dump(payload, temp)
@@ -596,14 +613,29 @@ def run_pyling_subprocess_once(case: BenchmarkCase, args: argparse.Namespace) ->
 
 
 PYLING_RUNNER = r"""
+import importlib.util
 import json
 import sys
 import time
 from pathlib import Path
 
-from pyling import reason_stream
+from pyling import reason_stream, register_builtin_module
+
+
+def load_builtin_module(path):
+    if not path:
+        return
+    module_path = Path(path).resolve()
+    spec = importlib.util.spec_from_file_location(f"pyling_perf_builtin_{module_path.stem}", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load builtin module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    register_builtin_module(module, origin=str(module_path))
 
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf8"))
+load_builtin_module(payload.get("builtin_path"))
 input_data = {"sources": payload["sources"]} if len(payload["sources"]) > 1 else payload["sources"][0]
 start = time.perf_counter()
 result = reason_stream(
@@ -615,10 +647,22 @@ result = reason_stream(
     max_iterations=payload["max_iterations"],
 )
 elapsed = (time.perf_counter() - start) * 1000
+query_triples = list(result.query_triples) if result.query_mode else []
+output_triples = [
+    tr for tr in query_triples
+    if getattr(getattr(tr, "p", None), "value", None) == "http://www.w3.org/2000/10/swap/log#outputString"
+]
+if result.query_mode:
+    selected_count = len(output_triples if output_triples else query_triples)
+    facts = selected_count
+    derived = selected_count
+else:
+    facts = len(result.facts)
+    derived = len(result.derived)
 print(json.dumps({
     "total_ms": elapsed,
-    "facts": len(result.facts),
-    "derived": len(result.derived),
+    "facts": facts,
+    "derived": derived,
     "closure_chars": len(result.closure_n3),
 }))
 """
@@ -711,10 +755,22 @@ const result = eyeling.reasonStream(source, {
   builtinModules: input.builtin_path ? [input.builtin_path] : null,
 });
 const elapsed = performance.now() - start;
+function predicateValue(triple) {
+  return triple && triple.p && triple.p.value;
+}
+let facts = result.facts.length;
+let derived = result.derived.length;
+if (result.queryMode) {
+  const queryTriples = Array.isArray(result.queryTriples) ? result.queryTriples : [];
+  const outputTriples = queryTriples.filter((tr) => predicateValue(tr) === "http://www.w3.org/2000/10/swap/log#outputString");
+  const selected = outputTriples.length ? outputTriples : queryTriples;
+  facts = selected.length;
+  derived = selected.length;
+}
 process.stdout.write(JSON.stringify({
   total_ms: elapsed,
-  facts: result.facts.length,
-  derived: result.derived.length,
+  facts,
+  derived,
   closure_chars: result.closureN3.length,
 }));
 """

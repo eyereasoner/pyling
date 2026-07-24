@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import sys
 from pathlib import Path
 
+from .builtins import register_builtin_module
 from .engine import InferenceFuseError, reason, reason_message_stream
 from .parser import N3SyntaxError
 from .rdf import RdfSyntaxError
@@ -25,6 +27,17 @@ def format_n3_syntax_error(error: N3SyntaxError, text: str, label: str = "<input
     return f"Syntax error in {label}:{line}:{column}: {error}\n{line_text}\n{' ' * (column - 1)}^"
 
 
+def load_builtin_module(path: str) -> None:
+    module_path = Path(path).resolve()
+    spec = importlib.util.spec_from_file_location(f"pyling_user_builtin_{module_path.stem}", module_path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"Cannot load builtin module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    register_builtin_module(module, origin=str(module_path))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pyling", description="Python Notation3/RDF reasoner compatible with Eyeling's core API")
     parser.add_argument("inputs", nargs="*", help="input files, or '-' for stdin")
@@ -36,6 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--input-format", default="auto", help="auto, n3, turtle, trig, nt, nquads")
     parser.add_argument("--stream-messages", action="store_true", help="process RDF Message Logs one message at a time")
     parser.add_argument("--ast", action="store_true", help="print parsed AST JSON")
+    parser.add_argument("--builtin", action="append", default=[], help="load a Python builtin module before reasoning")
     parser.add_argument("--include-input-facts", action="store_true", help="include input facts in closure output")
     parser.add_argument("--max-iterations", type=int, default=1000)
     ns = parser.parse_args(argv)
@@ -53,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     sources.append(Path(name).read_text(encoding="utf8"))
                     source_labels.append(name)
+        for builtin_path in ns.builtin:
+            load_builtin_module(builtin_path)
         input_data = {"sources": sources} if len(sources) > 1 else (sources[0] if sources else "")
         opts = {
             "proof": ns.proof,

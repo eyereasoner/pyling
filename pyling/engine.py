@@ -123,6 +123,16 @@ class Engine:
             tuple[Term, str, tuple[int, ...], Any], list[Triple]
         ] = {}
         self._var_pred_facts: list[Triple] = []
+        self._fact_index_states: dict[tuple[int, int], tuple[
+            list[Triple],
+            dict[Term, list[Triple]],
+            dict[tuple[Term, Term], list[Triple]],
+            dict[tuple[Term, Term], list[Triple]],
+            dict[tuple[Term, str, tuple[int, ...], Any], list[Triple]],
+            list[Triple],
+        ]] = {}
+        self._scoped_fact_lists: dict[tuple[Triple, ...], list[Triple]] = {}
+        self._deep_list_subject_candidates: dict[tuple[Any, ...], list[Triple]] = {}
         for _tr in self.facts:
             self._index_fact(_tr)
         self._indexed_facts_obj_id = id(self.facts)
@@ -254,16 +264,64 @@ class Engine:
             if isinstance(item, ListTerm):
                 yield from self._list_component_keys(item, item_path)
 
+    def _capture_fact_index_state(self) -> tuple[
+        list[Triple],
+        dict[Term, list[Triple]],
+        dict[tuple[Term, Term], list[Triple]],
+        dict[tuple[Term, Term], list[Triple]],
+        dict[tuple[Term, str, tuple[int, ...], Any], list[Triple]],
+        list[Triple],
+    ]:
+        return (
+            self.facts,
+            self._facts_by_pred,
+            self._facts_by_ps,
+            self._facts_by_po,
+            self._facts_by_list_component,
+            self._var_pred_facts,
+        )
+
+    def _restore_fact_index_state(
+        self,
+        state: tuple[
+            list[Triple],
+            dict[Term, list[Triple]],
+            dict[tuple[Term, Term], list[Triple]],
+            dict[tuple[Term, Term], list[Triple]],
+            dict[tuple[Term, str, tuple[int, ...], Any], list[Triple]],
+            list[Triple],
+        ],
+    ) -> None:
+        (
+            _facts,
+            self._facts_by_pred,
+            self._facts_by_ps,
+            self._facts_by_po,
+            self._facts_by_list_component,
+            self._var_pred_facts,
+        ) = state
+        self._indexed_facts_obj_id = id(self.facts)
+        self._indexed_facts_len = len(self.facts)
+
+    def scoped_fact_list(self, triples: Iterable[Triple]) -> list[Triple]:
+        key = triples if isinstance(triples, tuple) else tuple(triples)
+        cached = self._scoped_fact_lists.get(key)
+        if cached is None:
+            cached = list(key)
+            self._scoped_fact_lists[key] = cached
+        return cached
+
     def _rebuild_fact_indexes(self) -> None:
-        self._facts_by_pred.clear()
-        self._facts_by_ps.clear()
-        self._facts_by_po.clear()
-        self._facts_by_list_component.clear()
-        self._var_pred_facts.clear()
+        self._facts_by_pred = {}
+        self._facts_by_ps = {}
+        self._facts_by_po = {}
+        self._facts_by_list_component = {}
+        self._var_pred_facts = []
         for tr in self.facts:
             self._index_fact(tr)
         self._indexed_facts_obj_id = id(self.facts)
         self._indexed_facts_len = len(self.facts)
+        self._fact_index_states[(self._indexed_facts_obj_id, self._indexed_facts_len)] = self._capture_fact_index_state()
 
     def _extract_memoize_declarations(self) -> None:
         """Pull out `<predicate> log:memoize true.` directives.
@@ -291,9 +349,18 @@ class Engine:
 
     def _ensure_fact_indexes_current(self) -> None:
         # Some log:* built-ins temporarily replace engine.facts with a scoped
-        # formula's triples. Rebuild the lookup tables when that happens.
+        # formula's triples. Reuse lookup tables for scopes we have already
+        # indexed; RDF Message workloads otherwise spend most time rebuilding
+        # identical indexes.
         if id(self.facts) != self._indexed_facts_obj_id or len(self.facts) != self._indexed_facts_len:
-            self._rebuild_fact_indexes()
+            if self._indexed_facts_obj_id is not None:
+                self._fact_index_states[(self._indexed_facts_obj_id, self._indexed_facts_len)] = self._capture_fact_index_state()
+            key = (id(self.facts), len(self.facts))
+            cached = self._fact_index_states.get(key)
+            if cached is not None and cached[0] is self.facts and len(cached[0]) == key[1]:
+                self._restore_fact_index_state(cached)
+            else:
+                self._rebuild_fact_indexes()
 
     def _candidate_facts(self, goal: Triple) -> Iterable[Triple]:
         self._ensure_fact_indexes_current()
@@ -304,11 +371,17 @@ class Engine:
         if pred_bucket is not None:
             candidates.append(pred_bucket)
         sk = self._lookup_key(goal.s)
+        used_deep_subject = False
         if sk is not None:
             bucket = self._facts_by_ps.get((goal.p, sk))
             if bucket is None:
                 return list(self._var_pred_facts)
             candidates.append(bucket)
+        elif pred_bucket is not None:
+            bucket = self._deep_list_subject_bucket(goal.p, goal.s, pred_bucket)
+            if bucket is not None:
+                candidates.append(bucket)
+                used_deep_subject = True
         ok = self._lookup_key(goal.o)
         if ok is not None:
             bucket = self._facts_by_po.get((goal.p, ok))
@@ -317,6 +390,8 @@ class Engine:
             candidates.append(bucket)
         component_candidates: list[list[Triple]] = []
         for side, term in (("s", goal.s), ("o", goal.o)):
+            if side == "s" and used_deep_subject:
+                continue
             for path, key in self._list_component_keys(term):
                 index_key = (goal.p, side, path, key)
                 bucket = self._facts_by_list_component.get(index_key)
@@ -341,6 +416,63 @@ class Engine:
             return base
         return list(base) + self._var_pred_facts
 
+    def _deep_list_subject_bucket(
+        self,
+        predicate: Term,
+        subject: Term,
+        pred_bucket: list[Triple],
+    ) -> list[Triple] | None:
+        if not isinstance(subject, ListTerm) or not subject.elems:
+            return None
+        positions: list[int] = []
+        keys: list[Any] = []
+        for index, item in enumerate(subject.elems):
+            key = self._lookup_key(item)
+            if key is not None:
+                positions.append(index)
+                keys.append(key)
+        if not positions:
+            return None
+        cache_key = (
+            id(self.facts),
+            len(self.facts),
+            predicate,
+            len(subject.elems),
+            tuple(positions),
+            tuple(keys),
+        )
+        cached = self._deep_list_subject_candidates.get(cache_key)
+        if cached is not None:
+            return cached
+        exact: list[Triple] = []
+        fallback: list[Triple] = []
+        wanted_len = len(subject.elems)
+        for fact in pred_bucket:
+            fact_subject = fact.s
+            if not isinstance(fact_subject, ListTerm) or len(fact_subject.elems) != wanted_len:
+                if self._lookup_key(fact_subject) is None:
+                    fallback.append(fact)
+                continue
+            matched = True
+            needs_fallback = False
+            for position, key in zip(positions, keys):
+                fact_key = self._lookup_key(fact_subject.elems[position])
+                if fact_key is None:
+                    needs_fallback = True
+                    continue
+                if fact_key != key:
+                    matched = False
+                    break
+            if not matched:
+                continue
+            if needs_fallback or self._lookup_key(fact_subject) is None:
+                fallback.append(fact)
+            else:
+                exact.append(fact)
+        bucket = exact + fallback
+        self._deep_list_subject_candidates[cache_key] = bucket
+        return bucket
+
     def add_fact(self, tr: Triple, inferred: bool = True) -> bool:
         # owl:differentFrom self is false in Eyeling style tests only when queried through sameAs? Keep as normal fact.
         if tr in self._fact_set:
@@ -360,6 +492,7 @@ class Engine:
         self._index_fact(tr)
         self._indexed_facts_len = len(self.facts)
         self._indexed_facts_obj_id = id(self.facts)
+        self._fact_index_states[(self._indexed_facts_obj_id, self._indexed_facts_len)] = self._capture_fact_index_state()
         if self._agenda_active:
             self._agenda_queue.append(tr)
         if inferred:
@@ -1175,21 +1308,31 @@ class Engine:
         completed_answers: list[Subst] = []
 
         def goal_key(goal: Triple) -> str:
-            primitive = triple_to_primitive(goal)
-
-            def canonicalize(value: Any) -> Any:
-                if isinstance(value, dict):
-                    if value.get("_type") == "Var":
-                        return {"_type": "Var", "name": "*"}
-                    return {key: canonicalize(item) for key, item in value.items()}
-                if isinstance(value, list):
-                    return [canonicalize(item) for item in value]
-                return value
-
             # Standardized rule variables change names at every recursive
             # call, so normalize variables for cycle detection. Blank nodes
             # remain identity-bearing terms and must not be collapsed.
-            return json.dumps(canonicalize(primitive), sort_keys=True, default=str)
+            def term_key(term: Term) -> str:
+                if isinstance(term, Var):
+                    return "V:*"
+                if isinstance(term, Iri):
+                    return "I:" + term.value
+                if isinstance(term, Blank):
+                    return "B:" + term.label
+                if isinstance(term, Literal):
+                    key = self._lookup_key(term)
+                    return "L:" + repr(key)
+                if isinstance(term, ListTerm):
+                    return "[" + ",".join(term_key(item) for item in term.elems) + "]"
+                if isinstance(term, OpenListTerm):
+                    return "[open:" + ",".join(term_key(item) for item in term.prefix) + "|V:*]"
+                if isinstance(term, GraphTerm):
+                    return "{" + ";".join(
+                        term_key(tr.s) + "\t" + term_key(tr.p) + "\t" + term_key(tr.o)
+                        for tr in term.triples
+                    ) + "}"
+                return repr(term)
+
+            return term_key(goal.s) + "\t" + term_key(goal.p) + "\t" + term_key(goal.o)
 
         def undo_to(mark: int) -> None:
             for name in reversed(trail[mark:]):
@@ -1476,8 +1619,7 @@ class Engine:
                     # the current proof state.
                     builtin_subst = (
                         subst_mut
-                        if len(subst_mut) <= 64
-                        or first.p.value in {
+                        if first.p.value in {
                             LOG_NS + "collectAllIn",
                             LOG_NS + "forAllIn",
                             LOG_NS + "includes",
@@ -1728,7 +1870,8 @@ class Engine:
             return t
         t = self.deref(t, subst)
         if isinstance(t, ListTerm):
-            return ListTerm(self.apply_subst(e, subst) for e in t.elems)
+            elems = tuple(self.apply_subst(e, subst) for e in t.elems)
+            return t if elems == t.elems else ListTerm(elems)
         if isinstance(t, OpenListTerm):
             prefix = tuple(self.apply_subst(e, subst) for e in t.prefix)
             tail = self.apply_subst(Var(t.tail_var), subst)
@@ -1737,10 +1880,13 @@ class Engine:
             if isinstance(tail, OpenListTerm):
                 return OpenListTerm((*prefix, *tail.prefix), tail.tail_var)
             if isinstance(tail, Var):
+                if prefix == t.prefix and tail.name == t.tail_var:
+                    return t
                 return OpenListTerm(prefix, tail.name)
             return OpenListTerm(prefix, t.tail_var)
         if isinstance(t, GraphTerm):
-            return GraphTerm(self.apply_subst_triple(tr, subst) for tr in t.triples)
+            triples = tuple(self.apply_subst_triple(tr, subst) for tr in t.triples)
+            return t if triples == t.triples else GraphTerm(triples)
         return t
 
     def apply_subst_triple(
@@ -1752,7 +1898,10 @@ class Engine:
     ) -> Triple:
         if ground_blanks:
             return self._instantiate_head_triple(tr, subst, blank_mapping)
-        return Triple(self.apply_subst(tr.s, subst), self.apply_subst(tr.p, subst), self.apply_subst(tr.o, subst))
+        s = self.apply_subst(tr.s, subst)
+        p = self.apply_subst(tr.p, subst)
+        o = self.apply_subst(tr.o, subst)
+        return tr if s == tr.s and p == tr.p and o == tr.o else Triple(s, p, o)
 
     def _instantiate_head_triple(
         self,
