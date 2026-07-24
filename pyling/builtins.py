@@ -105,6 +105,12 @@ def _term_num(t: Term) -> Decimal | None:
     return numeric_value(t)
 
 
+def _applied(ctx: BuiltinContext, term: Term) -> Term:
+    if not ctx.subst:
+        return term
+    return ctx.engine.apply_subst(term, ctx.subst)  # type: ignore[attr-defined]
+
+
 def _term_int(t: Term) -> int | None:
     if isinstance(t, Literal) and literal_datatype(t) == XSD_NS + "integer":
         try:
@@ -255,7 +261,7 @@ def _bind_or_test(ctx: BuiltinContext, expected: Term, actual: Term) -> list[Sub
 
 
 def _bind_numeric_or_test(ctx: BuiltinContext, expected: Term, actual: Literal) -> list[Subst]:
-    expected_value = ctx.engine.apply_subst(expected, ctx.subst)  # type: ignore[attr-defined]
+    expected_value = _applied(ctx, expected)
     expected_num = numeric_value(expected_value)
     actual_num = numeric_value(actual)
     if expected_num is not None and actual_num is not None:
@@ -264,7 +270,7 @@ def _bind_numeric_or_test(ctx: BuiltinContext, expected: Term, actual: Literal) 
 
 
 def _list_elems(ctx: BuiltinContext, t: Term) -> list[Term] | None:
-    t = ctx.engine.apply_subst(t, ctx.subst)  # type: ignore[attr-defined]
+    t = _applied(ctx, t)
     if isinstance(t, ListTerm):
         return list(t.elems)
     if isinstance(t, Iri) and t.value == RDF_NIL:
@@ -302,8 +308,8 @@ def _known_list_terms(ctx: BuiltinContext) -> list[ListTerm]:
 
 def _math_cmp(op: Callable[[Decimal, Decimal], bool]) -> BuiltinHandler:
     def handler(ctx: BuiltinContext) -> list[Subst]:
-        subject = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
-        obj = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
+        subject = _applied(ctx, ctx.goal.s)
+        obj = _applied(ctx, ctx.goal.o)
         if isinstance(subject, ListTerm) and len(subject.elems) == 2:
             left, right = subject.elems
         else:
@@ -317,8 +323,8 @@ def _math_cmp(op: Callable[[Decimal, Decimal], bool]) -> BuiltinHandler:
 
 
 def _math_equal(ctx: BuiltinContext) -> list[Subst]:
-    subject = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
-    obj = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
+    subject = _applied(ctx, ctx.goal.s)
+    obj = _applied(ctx, ctx.goal.o)
     left, right = subject.elems if isinstance(subject, ListTerm) and len(subject.elems) == 2 else (subject, obj)
     a = _comparable_num(left)
     b = _comparable_num(right)
@@ -326,8 +332,8 @@ def _math_equal(ctx: BuiltinContext) -> list[Subst]:
 
 
 def _math_not_equal(ctx: BuiltinContext) -> list[Subst]:
-    subject = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
-    obj = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
+    subject = _applied(ctx, ctx.goal.s)
+    obj = _applied(ctx, ctx.goal.o)
     left, right = subject.elems if isinstance(subject, ListTerm) and len(subject.elems) == 2 else (subject, obj)
     a = _comparable_num(left)
     b = _comparable_num(right)
@@ -347,7 +353,7 @@ def _math_sum(ctx: BuiltinContext) -> list[Subst]:
     elems = _list_elems(ctx, ctx.goal.s)
     if elems is None:
         return []
-    values = [ctx.engine.apply_subst(e, ctx.subst) for e in elems]  # type: ignore[attr-defined]
+    values = [_applied(ctx, e) for e in elems]
     if len(values) == 2:
         for date_term, duration_term in (values, reversed(values)):
             date = _datetime_value(date_term)
@@ -383,7 +389,7 @@ def _math_product(ctx: BuiltinContext) -> list[Subst]:
     elems = _list_elems(ctx, ctx.goal.s)
     if elems is None:
         return []
-    values = [ctx.engine.apply_subst(e, ctx.subst) for e in elems]  # type: ignore[attr-defined]
+    values = [_applied(ctx, e) for e in elems]
     datatype = _promoted_numeric_datatype(values)
     if datatype == XSD_NS + "integer":
         ints = [_term_int(e) for e in values]
@@ -405,8 +411,8 @@ def _binary_num(ctx: BuiltinContext, fn: Callable[[Decimal, Decimal], Decimal]) 
     elems = _list_elems(ctx, ctx.goal.s)
     if not elems or len(elems) != 2:
         return []
-    a = _term_num(ctx.engine.apply_subst(elems[0], ctx.subst))  # type: ignore[attr-defined]
-    b = _term_num(ctx.engine.apply_subst(elems[1], ctx.subst))  # type: ignore[attr-defined]
+    a = _term_num(_applied(ctx, elems[0]))
+    b = _term_num(_applied(ctx, elems[1]))
     if a is None or b is None:
         return []
     try:
@@ -416,11 +422,11 @@ def _binary_num(ctx: BuiltinContext, fn: Callable[[Decimal, Decimal], Decimal]) 
 
 
 def _unary_num(ctx: BuiltinContext, fn: Callable[[Decimal], Decimal]) -> list[Subst]:
-    a = _term_num(ctx.engine.apply_subst(ctx.goal.s, ctx.subst))  # type: ignore[attr-defined]
+    a = _term_num(_applied(ctx, ctx.goal.s))
     if a is None:
         return []
     try:
-        subject = ctx.engine.apply_subst(ctx.goal.s, ctx.subst)  # type: ignore[attr-defined]
+        subject = _applied(ctx, ctx.goal.s)
         datatype = literal_datatype(subject) if isinstance(subject, Literal) else XSD_NS + "decimal"
         return _bind_or_test(ctx, ctx.goal.o, _typed_num_lit(fn(a), datatype))
     except Exception:
@@ -430,7 +436,7 @@ def _unary_num(ctx: BuiltinContext, fn: Callable[[Decimal], Decimal]) -> list[Su
 def _math_difference(ctx: BuiltinContext) -> list[Subst]:
     elems = _list_elems(ctx, ctx.goal.s)
     if elems is not None and len(elems) == 2:
-        values = [ctx.engine.apply_subst(e, ctx.subst) for e in elems]  # type: ignore[attr-defined]
+        values = [_applied(ctx, e) for e in elems]
         left_date = _datetime_value(values[0])
         right_date = _datetime_value(values[1])
         if left_date is not None and right_date is not None:
@@ -458,8 +464,8 @@ def _math_quotient(ctx: BuiltinContext) -> list[Subst]:
     elems = _list_elems(ctx, ctx.goal.s)
     if elems is None or len(elems) != 2:
         return []
-    a = _term_num(ctx.engine.apply_subst(elems[0], ctx.subst))  # type: ignore[attr-defined]
-    b = _term_num(ctx.engine.apply_subst(elems[1], ctx.subst))  # type: ignore[attr-defined]
+    a = _term_num(_applied(ctx, elems[0]))
+    b = _term_num(_applied(ctx, elems[1]))
     if a is None or b is None or b == 0:
         return []
     result = a / b
@@ -472,7 +478,7 @@ def _math_quotient(ctx: BuiltinContext) -> list[Subst]:
 def _math_remainder(ctx: BuiltinContext) -> list[Subst]:
     elems = _list_elems(ctx, ctx.goal.s)
     if elems is not None and len(elems) == 2:
-        values = [ctx.engine.apply_subst(e, ctx.subst) for e in elems]  # type: ignore[attr-defined]
+        values = [_applied(ctx, e) for e in elems]
         ints = [_term_int(value) for value in values]
         if all(value is not None for value in ints) and ints[1] != 0:
             quotient = abs(ints[0]) // abs(ints[1])  # type: ignore[arg-type]
@@ -485,7 +491,7 @@ def _math_remainder(ctx: BuiltinContext) -> list[Subst]:
 def _math_integer_quotient(ctx: BuiltinContext) -> list[Subst]:
     elems = _list_elems(ctx, ctx.goal.s)
     if elems is not None and len(elems) == 2:
-        values = [ctx.engine.apply_subst(e, ctx.subst) for e in elems]  # type: ignore[attr-defined]
+        values = [_applied(ctx, e) for e in elems]
         ints = [_term_int(value) for value in values]
         if all(value is not None for value in ints) and ints[1] != 0:
             quotient = abs(ints[0]) // abs(ints[1])  # type: ignore[arg-type]
@@ -498,12 +504,12 @@ def _math_integer_quotient(ctx: BuiltinContext) -> list[Subst]:
 def _math_exponentiation(ctx: BuiltinContext) -> list[Subst]:
     elems = _list_elems(ctx, ctx.goal.s)
     if elems is not None and len(elems) == 2:
-        values = [ctx.engine.apply_subst(e, ctx.subst) for e in elems]  # type: ignore[attr-defined]
+        values = [_applied(ctx, e) for e in elems]
         ints = [_term_int(value) for value in values]
         if all(value is not None for value in ints) and ints[1] >= 0:
             return _bind_or_test(ctx, ctx.goal.o, _int_lit(pow(ints[0], ints[1])))  # type: ignore[arg-type]
         base = _term_num(values[0])
-        result_term = ctx.engine.apply_subst(ctx.goal.o, ctx.subst)  # type: ignore[attr-defined]
+        result_term = _applied(ctx, ctx.goal.o)
         result = _term_num(result_term)
         if base is not None and isinstance(values[1], Var) and result is not None:
             base_float = float(base)

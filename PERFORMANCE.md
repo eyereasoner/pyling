@@ -61,21 +61,21 @@ Among the 222 exact-output normal cases, Pyling was faster on 145 cases and Eyel
 
 ### Slow-case rerun after latest optimizations
 
-After studying the latest Eyeling engine, Pyling adopted the same builtin-delta hot path for ordinary builtins, reduced substitution object churn, replaced JSON-based visited-goal keys, added reusable scoped fact-index states, and moved the Queens example to a separately loaded Python builtin that parallelizes independent search branches on Linux. The following focused rerun used the latest local Eyeling checkout at commit `0a9270e`.
+After studying the latest Eyeling engine, Pyling adopted the same builtin-delta hot path for ordinary builtins, reduced substitution object churn, replaced JSON-based visited-goal keys, added reusable scoped fact-index states, and moved the Queens example to a separately loaded Python builtin that parallelizes independent search branches on Linux. Follow-up Python-specific passes added lazy integer lookup keys, cached numeric/substitution/visited-key metadata on the existing slotted term objects, trail-local dereference/substitution/goal-ranking, small-list fast paths, and arithmetic builtin shortcuts that avoid redundant substitution walks after the solver has already instantiated a goal. These preserve the public API while reducing Python dataclass hashing, string-key construction, and interpreter-recursion overhead. The following focused reruns used the latest local Eyeling checkout at commit `0a9270e`.
 
 | Case | Pyling | Eyeling | Pyling/Eyeling | Change from earlier Pyling run |
 |---|---:|---:|---:|---:|
-| `deep-taxonomy-100000.n3` | 15,109.72 ms | 2,364.27 ms | 6.39x | slower/no clear gain |
-| `dining-philosophers.n3` | 900.31 ms | 114.77 ms | 7.84x | faster than 1,390.58 ms |
-| `kaprekar-6174.n3` | 10,883.28 ms | 2,088.19 ms | 5.21x | faster than 17,241.59 ms |
-| `queens.n3` | 697.95 ms | 265.25 ms | 2.63x | faster than 2,394.01 ms |
-| `rdf-message-cold-chain-recall.n3` | 964.85 ms | 73.34 ms | 13.16x | about unchanged |
-| `rdf-message-ldes-incremental.n3` | 466.28 ms | 68.40 ms | 6.82x | about unchanged |
-| `takeuchi.n3` | 9,281.46 ms | 871.96 ms | 10.64x | faster than 10,741.42 ms |
-| `transitive-closure.n3` | 2,402.11 ms | 400.50 ms | 6.00x | about unchanged |
-| `zebra.n3` | 218.42 ms | 86.67 ms | 2.52x | faster than 837.23 ms |
+| `deep-taxonomy-100000.n3` | 14,252.51 ms | 2,307.08 ms | 6.18x | about unchanged from 13,928.66 ms |
+| `dining-philosophers.n3` | 895.21 ms | 113.72 ms | 7.87x | faster than 1,390.58 ms |
+| `kaprekar-6174.n3` | 7,547.24 ms | 1,921.00 ms | 3.93x | faster than 17,241.59 ms |
+| `queens.n3` | 725.59 ms | 276.90 ms | 2.62x | faster than 2,394.01 ms |
+| `rdf-message-cold-chain-recall.n3` | 706.34 ms | 75.23 ms | 9.39x | faster than 971.91 ms |
+| `rdf-message-ldes-incremental.n3` | 322.96 ms | 75.47 ms | 4.28x | faster than 463.86 ms |
+| `takeuchi.n3` | 6,710.82 ms | 830.78 ms | 8.08x | faster than 10,741.42 ms |
+| `transitive-closure.n3` | 2,012.09 ms | 386.42 ms | 5.21x | faster than 2,449.33 ms |
+| `zebra.n3` | 175.72 ms | 91.11 ms | 1.93x | faster than 837.23 ms |
 
-The remaining substantial gaps are now most visible in broad data closure (`deep-taxonomy-100000.n3`), scoped RDF Message reasoning, and recursive arithmetic/search (`takeuchi.n3`, `kaprekar-6174.n3`). The optimizations improve Python interpreter overhead in those paths, but Eyeling still benefits from JavaScript term ids, array-attached indexes, and a lower-cost object model.
+The remaining substantial gaps are now most visible in broad data closure (`deep-taxonomy-100000.n3`) and recursive arithmetic/search (`takeuchi.n3`, `kaprekar-6174.n3`). Scoped RDF Message reasoning improved after the integer-key cache because it performs many repeated indexed lookups over formula scopes. Recursive arithmetic improved further after moving more proof-local work off the public substitution API, but Eyeling still benefits from a deeper all-internal integer term representation and array-backed solver state.
 
 ### Clearly slow cases
 

@@ -80,9 +80,22 @@ _NUMERIC_DT = {
     XSD_NS + "float",
 }
 
+_MISSING = object()
+
 
 class Term:
-    """Marker base class."""
+    """Marker base class.
+
+    Hidden slots are used by the engine for lazy internal caches. They are not
+    part of the public term model and do not participate in equality or hashing.
+    """
+
+    __slots__ = (
+        "_pyling_lookup_key",
+        "_pyling_needs_substitution",
+        "_pyling_numeric_value",
+        "_pyling_visited_key",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,13 +308,20 @@ def literal_datatype(lit: Literal) -> str:
 def numeric_value(term: Term) -> Optional[Decimal]:
     if not isinstance(term, Literal):
         return None
+    cached = getattr(term, "_pyling_numeric_value", _MISSING)
+    if cached is not _MISSING:
+        return cached
     dt = literal_datatype(term)
     if dt not in _NUMERIC_DT:
+        object.__setattr__(term, "_pyling_numeric_value", None)
         return None
     try:
-        return Decimal(str(term.lexical))
+        value = Decimal(str(term.lexical))
     except (InvalidOperation, ValueError):
+        object.__setattr__(term, "_pyling_numeric_value", None)
         return None
+    object.__setattr__(term, "_pyling_numeric_value", value)
+    return value
 
 
 def bool_value(term: Term) -> Optional[bool]:

@@ -21,6 +21,13 @@ versioning while the public package API is still stabilizing.
   reuse unchanged term/triple objects after substitution, use cheaper
   visited-goal keys, and keep reusable fact indexes for repeated scoped
   formula searches.
+- The engine now stores lazy internal integer lookup keys and cached numeric,
+  substitution, and visited-key metadata on slotted term objects, reducing
+  Python object-model overhead while preserving the public term API.
+- Recursive proof search now uses trail-local dereference, substitution, and
+  goal-ranking paths, with small-list fast paths and arithmetic builtin
+  shortcuts to avoid redundant Python recursion in hot examples such as
+  `takeuchi.n3` and `kaprekar-6174.n3`.
 - The example-scoped Queens builtin now parallelizes independent first-row
   branches on platforms with cheap `fork` support, while remaining outside the
   default builtin registry.

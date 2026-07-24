@@ -53,6 +53,9 @@ INFERENCE_FUSE_EXIT_CODE = 65
 
 Subst = dict[str, Term]
 
+_MISSING = object()
+_NEXT_CACHE_GENERATION = 1
+
 
 @dataclass(slots=True)
 class _AgendaEntry:
@@ -111,24 +114,29 @@ class ReasonStreamResult:
 
 class Engine:
     def __init__(self, doc: Document, options: Mapping[str, Any] | None = None) -> None:
+        global _NEXT_CACHE_GENERATION
+        self._cache_generation = _NEXT_CACHE_GENERATION
+        _NEXT_CACHE_GENERATION += 1
+        self._key_ids: dict[Any, int] = {}
+        self._next_key_id = 1
         self.doc = doc
         self.options = dict(options or {})
         self.prefixes = doc.prefixes
         self.facts: list[Triple] = list(doc.triples)
         self._fact_set: set[Triple] = set(doc.triples)
-        self._facts_by_pred: dict[Term, list[Triple]] = {}
-        self._facts_by_ps: dict[tuple[Term, Term], list[Triple]] = {}
-        self._facts_by_po: dict[tuple[Term, Term], list[Triple]] = {}
+        self._facts_by_pred: dict[Any, list[Triple]] = {}
+        self._facts_by_ps: dict[tuple[Any, Any], list[Triple]] = {}
+        self._facts_by_po: dict[tuple[Any, Any], list[Triple]] = {}
         self._facts_by_list_component: dict[
-            tuple[Term, str, tuple[int, ...], Any], list[Triple]
+            tuple[Any, str, tuple[int, ...], Any], list[Triple]
         ] = {}
         self._var_pred_facts: list[Triple] = []
         self._fact_index_states: dict[tuple[int, int], tuple[
             list[Triple],
-            dict[Term, list[Triple]],
-            dict[tuple[Term, Term], list[Triple]],
-            dict[tuple[Term, Term], list[Triple]],
-            dict[tuple[Term, str, tuple[int, ...], Any], list[Triple]],
+            dict[Any, list[Triple]],
+            dict[tuple[Any, Any], list[Triple]],
+            dict[tuple[Any, Any], list[Triple]],
+            dict[tuple[Any, str, tuple[int, ...], Any], list[Triple]],
             list[Triple],
         ]] = {}
         self._scoped_fact_lists: dict[tuple[Triple, ...], list[Triple]] = {}
@@ -166,9 +174,9 @@ class Engine:
         self._agenda_active = False
         self._agenda_queue: list[Triple] = []
         self._agenda_indexed_rules: set[Rule] = set()
-        self._agenda_by_pred: dict[Term, list[_AgendaEntry]] = {}
-        self._agenda_by_ps: dict[tuple[Term, Term], list[_AgendaEntry]] = {}
-        self._agenda_by_po: dict[tuple[Term, Term], list[_AgendaEntry]] = {}
+        self._agenda_by_pred: dict[Any, list[_AgendaEntry]] = {}
+        self._agenda_by_ps: dict[tuple[Any, Any], list[_AgendaEntry]] = {}
+        self._agenda_by_po: dict[tuple[Any, Any], list[_AgendaEntry]] = {}
         self._agenda_all_entries: list[_AgendaEntry] = []
         self._fresh_counter = 0
         self._std_counter = 0
@@ -186,7 +194,6 @@ class Engine:
         self._bottom_up_memo_active: set[tuple[str, int]] = set()
         self._goal_memo_version: tuple | None = None
         self._goal_memo_table: dict[str, list[Subst]] = {}
-        self._term_substitution_cache: dict[int, tuple[Term, bool]] = {}
         self._extract_memoize_declarations()
 
     def term_to_n3(self, term: Term) -> str:
@@ -207,17 +214,29 @@ class Engine:
             self._rule_key_cache[r] = key
         return key
 
+    def _key_id(self, key: Any) -> int:
+        cached = self._key_ids.get(key)
+        if cached is not None:
+            return cached
+        out = self._next_key_id
+        self._next_key_id += 1
+        self._key_ids[key] = out
+        return out
+
     def _lookup_key(self, term: Term) -> Any | None:
         """Return an exact-match index key, or None when broad unification is needed."""
         term = self.deref(term, {})
+        cached = getattr(term, "_pyling_lookup_key", _MISSING)
+        if cached is not _MISSING and cached[0] == self._cache_generation:
+            return cached[1]
         if isinstance(term, Var) or isinstance(term, OpenListTerm):
-            return None
-        if isinstance(term, Literal):
+            key = None
+        elif isinstance(term, Literal):
             datatype = literal_datatype(term)
             number = numeric_value(term)
             if number is not None and not number.is_nan():
-                return ("literal-number", datatype, number)
-            if datatype in {XSD_NS + "date", XSD_NS + "dateTime"}:
+                key = self._key_id(("literal-number", datatype, number))
+            elif datatype in {XSD_NS + "date", XSD_NS + "dateTime"}:
                 import datetime
 
                 try:
@@ -225,30 +244,94 @@ class Engine:
                         value = datetime.datetime.fromisoformat(term.lexical.replace("Z", "+00:00"))
                     else:
                         value = datetime.date.fromisoformat(term.lexical)
-                    return ("literal-temporal", datatype, value)
+                    key = self._key_id(("literal-temporal", datatype, value))
                 except ValueError:
-                    pass
-            return ("literal", datatype, (term.lang or "").lower(), term.lexical)
-        if isinstance(term, ListTerm):
-            return term if all(self._lookup_key(e) is not None for e in term.elems) else None
-        if isinstance(term, GraphTerm):
-            return None
-        return term
+                    key = self._key_id(("literal", datatype, (term.lang or "").lower(), term.lexical))
+            else:
+                key = self._key_id(("literal", datatype, (term.lang or "").lower(), term.lexical))
+        elif isinstance(term, ListTerm):
+            child_keys = tuple(self._lookup_key(e) for e in term.elems)
+            key = None if any(child is None for child in child_keys) else self._key_id(("list", child_keys))
+        elif isinstance(term, GraphTerm):
+            key = None
+        elif isinstance(term, Iri):
+            key = self._key_id(("iri", term.value))
+        elif isinstance(term, Blank):
+            key = self._key_id(("blank", term.label))
+        else:
+            key = self._key_id(("term", term))
+        object.__setattr__(term, "_pyling_lookup_key", (self._cache_generation, key))
+        return key
+
+    def _visited_term_key(self, term: Term) -> Any:
+        cached = getattr(term, "_pyling_visited_key", _MISSING)
+        if cached is not _MISSING and cached[0] == self._cache_generation:
+            return cached[1]
+        if isinstance(term, Var):
+            return ("V",)
+        if isinstance(term, OpenListTerm):
+            key = ("O", tuple(self._visited_term_key(item) for item in term.prefix))
+        elif isinstance(term, GraphTerm):
+            key = (
+                "G",
+                tuple(
+                    (
+                        self._visited_term_key(tr.s),
+                        self._visited_term_key(tr.p),
+                        self._visited_term_key(tr.o),
+                    )
+                    for tr in term.triples
+                ),
+            )
+        elif isinstance(term, ListTerm):
+            lookup = self._lookup_key(term)
+            if lookup is not None:
+                key = ("K", lookup)
+            else:
+                elems = term.elems
+                size = len(elems)
+                if size == 0:
+                    child_keys = ()
+                elif size == 1:
+                    child_keys = (self._visited_term_key(elems[0]),)
+                elif size == 2:
+                    child_keys = (
+                        self._visited_term_key(elems[0]),
+                        self._visited_term_key(elems[1]),
+                    )
+                elif size == 3:
+                    child_keys = (
+                        self._visited_term_key(elems[0]),
+                        self._visited_term_key(elems[1]),
+                        self._visited_term_key(elems[2]),
+                    )
+                else:
+                    child_keys = tuple(self._visited_term_key(item) for item in elems)
+                key = ("L", child_keys)
+        else:
+            lookup = self._lookup_key(term)
+            key = ("K", lookup) if lookup is not None else ("T", term)
+        object.__setattr__(term, "_pyling_visited_key", (self._cache_generation, key))
+        return key
 
     def _index_fact(self, tr: Triple) -> None:
         if isinstance(tr.p, Var):
             self._var_pred_facts.append(tr)
             return
-        self._facts_by_pred.setdefault(tr.p, []).append(tr)
+        pk = self._lookup_key(tr.p)
+        if pk is None:
+            self._var_pred_facts.append(tr)
+            return
+        self._facts_by_pred.setdefault(pk, []).append(tr)
         sk = self._lookup_key(tr.s)
         if sk is not None:
-            self._facts_by_ps.setdefault((tr.p, sk), []).append(tr)
+            self._facts_by_ps.setdefault((pk, sk), []).append(tr)
         ok = self._lookup_key(tr.o)
         if ok is not None:
-            self._facts_by_po.setdefault((tr.p, ok), []).append(tr)
+            self._facts_by_po.setdefault((pk, ok), []).append(tr)
         for side, term in (("s", tr.s), ("o", tr.o)):
             for path, key in self._list_component_keys(term):
-                index_key = (tr.p, side, path, key)
+                index_key = (pk, side, path, key)
                 self._facts_by_list_component.setdefault(index_key, []).append(tr)
 
     def _list_component_keys(
@@ -366,25 +449,28 @@ class Engine:
         self._ensure_fact_indexes_current()
         if isinstance(goal.p, Var):
             return list(self.facts)
+        pk = self._lookup_key(goal.p)
+        if pk is None:
+            return list(self._var_pred_facts)
         candidates: list[list[Triple]] = []
-        pred_bucket = self._facts_by_pred.get(goal.p)
+        pred_bucket = self._facts_by_pred.get(pk)
         if pred_bucket is not None:
             candidates.append(pred_bucket)
         sk = self._lookup_key(goal.s)
         used_deep_subject = False
         if sk is not None:
-            bucket = self._facts_by_ps.get((goal.p, sk))
+            bucket = self._facts_by_ps.get((pk, sk))
             if bucket is None:
                 return list(self._var_pred_facts)
             candidates.append(bucket)
         elif pred_bucket is not None:
-            bucket = self._deep_list_subject_bucket(goal.p, goal.s, pred_bucket)
+            bucket = self._deep_list_subject_bucket(pk, goal.s, pred_bucket)
             if bucket is not None:
                 candidates.append(bucket)
                 used_deep_subject = True
         ok = self._lookup_key(goal.o)
         if ok is not None:
-            bucket = self._facts_by_po.get((goal.p, ok))
+            bucket = self._facts_by_po.get((pk, ok))
             if bucket is None:
                 return list(self._var_pred_facts)
             candidates.append(bucket)
@@ -393,7 +479,7 @@ class Engine:
             if side == "s" and used_deep_subject:
                 continue
             for path, key in self._list_component_keys(term):
-                index_key = (goal.p, side, path, key)
+                index_key = (pk, side, path, key)
                 bucket = self._facts_by_list_component.get(index_key)
                 if bucket is None:
                     return list(self._var_pred_facts)
@@ -418,7 +504,7 @@ class Engine:
 
     def _deep_list_subject_bucket(
         self,
-        predicate: Term,
+        predicate: Any,
         subject: Term,
         pred_bucket: list[Triple],
     ) -> list[Triple] | None:
@@ -692,7 +778,9 @@ class Engine:
         return get_builtin(goal.p.value) is None
 
     def _add_agenda_entry(self, entry: _AgendaEntry) -> None:
-        p = entry.goal.p
+        p = self._lookup_key(entry.goal.p)
+        if p is None:
+            return
         self._agenda_all_entries.append(entry)
         if entry.s_key is None and entry.o_key is None:
             self._agenda_by_pred.setdefault(p, []).append(entry)
@@ -729,18 +817,21 @@ class Engine:
         if isinstance(fact.p, Var):
             # Rare: a variable-predicate fact can unify with many rule premises.
             return list(self._agenda_all_entries)
+        pk = self._lookup_key(fact.p)
+        if pk is None:
+            return list(self._agenda_all_entries)
         buckets: list[list[_AgendaEntry]] = []
-        broad = self._agenda_by_pred.get(fact.p)
+        broad = self._agenda_by_pred.get(pk)
         if broad:
             buckets.append(broad)
         sk = self._lookup_key(fact.s)
         if sk is not None:
-            bucket = self._agenda_by_ps.get((fact.p, sk))
+            bucket = self._agenda_by_ps.get((pk, sk))
             if bucket:
                 buckets.append(bucket)
         ok = self._lookup_key(fact.o)
         if ok is not None:
-            bucket = self._agenda_by_po.get((fact.p, ok))
+            bucket = self._agenda_by_po.get((pk, ok))
             if bucket:
                 buckets.append(bucket)
         out: list[_AgendaEntry] = []
@@ -831,7 +922,7 @@ class Engine:
                         add_goal(body_goal)
 
         counts = tuple(
-            (predicate.value, len(self._facts_by_pred.get(predicate, ())))
+            (predicate.value, len(self._facts_by_pred.get(self._lookup_key(predicate), ())))
             for predicate in sorted(dependencies, key=lambda item: item.value)
         )
         return (
@@ -1027,12 +1118,29 @@ class Engine:
             return False
         if isinstance(term, (Var, OpenListTerm)):
             return True
-        identity = id(term)
-        cached = self._term_substitution_cache.get(identity)
-        if cached is not None and cached[0] is term:
-            return cached[1]
+        cached = getattr(term, "_pyling_needs_substitution", _MISSING)
+        if cached is not _MISSING:
+            return cached
         if isinstance(term, ListTerm):
-            result = any(self._term_needs_substitution(item) for item in term.elems)
+            elems = term.elems
+            size = len(elems)
+            if size == 0:
+                result = False
+            elif size == 1:
+                result = self._term_needs_substitution(elems[0])
+            elif size == 2:
+                result = (
+                    self._term_needs_substitution(elems[0])
+                    or self._term_needs_substitution(elems[1])
+                )
+            elif size == 3:
+                result = (
+                    self._term_needs_substitution(elems[0])
+                    or self._term_needs_substitution(elems[1])
+                    or self._term_needs_substitution(elems[2])
+                )
+            else:
+                result = any(self._term_needs_substitution(item) for item in elems)
         elif isinstance(term, GraphTerm):
             result = any(
                 self._term_needs_substitution(item.s)
@@ -1042,7 +1150,7 @@ class Engine:
             )
         else:
             result = True
-        self._term_substitution_cache[identity] = (term, result)
+        object.__setattr__(term, "_pyling_needs_substitution", result)
         return result
 
     def _triple_contains_unbound_var(self, triple: Triple) -> bool:
@@ -1263,7 +1371,7 @@ class Engine:
         subst: Subst,
         depth: int = 0,
         allow_reorder: bool = True,
-        _visited: frozenset[str] | None = None,
+        _visited: frozenset[Any] | None = None,
     ) -> Iterator[Subst]:
         """Prove goals with iterative DFS and trail-backed substitutions."""
         goal_memo_key: str | None = None
@@ -1279,8 +1387,8 @@ class Engine:
 
         subst_mut: Subst = dict(subst)
         trail: list[str] = []
-        visited_counts: dict[str, int] = {key: 1 for key in (_visited or frozenset())}
-        visited_trail: list[str] = []
+        visited_counts: dict[Any, int] = {key: 1 for key in (_visited or frozenset())}
+        visited_trail: list[Any] = []
         answer_vars = set(subst)
 
         def collect_vars(term: Term, target: set[str]) -> None:
@@ -1307,39 +1415,22 @@ class Engine:
             collect_vars(original_goal.o, answer_vars)
         completed_answers: list[Subst] = []
 
-        def goal_key(goal: Triple) -> str:
+        def goal_key(goal: Triple) -> tuple[Any, Any, Any]:
             # Standardized rule variables change names at every recursive
             # call, so normalize variables for cycle detection. Blank nodes
             # remain identity-bearing terms and must not be collapsed.
-            def term_key(term: Term) -> str:
-                if isinstance(term, Var):
-                    return "V:*"
-                if isinstance(term, Iri):
-                    return "I:" + term.value
-                if isinstance(term, Blank):
-                    return "B:" + term.label
-                if isinstance(term, Literal):
-                    key = self._lookup_key(term)
-                    return "L:" + repr(key)
-                if isinstance(term, ListTerm):
-                    return "[" + ",".join(term_key(item) for item in term.elems) + "]"
-                if isinstance(term, OpenListTerm):
-                    return "[open:" + ",".join(term_key(item) for item in term.prefix) + "|V:*]"
-                if isinstance(term, GraphTerm):
-                    return "{" + ";".join(
-                        term_key(tr.s) + "\t" + term_key(tr.p) + "\t" + term_key(tr.o)
-                        for tr in term.triples
-                    ) + "}"
-                return repr(term)
-
-            return term_key(goal.s) + "\t" + term_key(goal.p) + "\t" + term_key(goal.o)
+            return (
+                self._visited_term_key(goal.s),
+                self._visited_term_key(goal.p),
+                self._visited_term_key(goal.o),
+            )
 
         def undo_to(mark: int) -> None:
             for name in reversed(trail[mark:]):
                 subst_mut.pop(name, None)
             del trail[mark:]
 
-        def push_visited(key: str) -> None:
+        def push_visited(key: Any) -> None:
             visited_counts[key] = visited_counts.get(key, 0) + 1
             visited_trail.append(key)
 
@@ -1352,14 +1443,177 @@ class Engine:
                     visited_counts[key] = count - 1
             del visited_trail[mark:]
 
+        def deref_trail(term: Term) -> Term:
+            if not isinstance(term, Var):
+                return term
+            while isinstance(term, Var):
+                value = subst_mut.get(term.name, _MISSING)
+                if value is _MISSING:
+                    return term
+                term = value
+            return term
+
+        def apply_subst_trail(term: Term) -> Term:
+            if not self._term_needs_substitution(term):
+                return term
+            term = deref_trail(term)
+            if isinstance(term, ListTerm):
+                original = term.elems
+                size = len(original)
+                if size == 0:
+                    return term
+                if size == 1:
+                    e0 = apply_subst_trail(original[0])
+                    return term if e0 == original[0] else ListTerm((e0,))
+                if size == 2:
+                    e0 = apply_subst_trail(original[0])
+                    e1 = apply_subst_trail(original[1])
+                    return term if e0 == original[0] and e1 == original[1] else ListTerm((e0, e1))
+                if size == 3:
+                    e0 = apply_subst_trail(original[0])
+                    e1 = apply_subst_trail(original[1])
+                    e2 = apply_subst_trail(original[2])
+                    return (
+                        term
+                        if e0 == original[0] and e1 == original[1] and e2 == original[2]
+                        else ListTerm((e0, e1, e2))
+                    )
+                elems = tuple(apply_subst_trail(item) for item in original)
+                return term if elems == original else ListTerm(elems)
+            if isinstance(term, OpenListTerm):
+                prefix = tuple(apply_subst_trail(item) for item in term.prefix)
+                tail = apply_subst_trail(Var(term.tail_var))
+                if isinstance(tail, ListTerm):
+                    return ListTerm((*prefix, *tail.elems))
+                if isinstance(tail, OpenListTerm):
+                    return OpenListTerm((*prefix, *tail.prefix), tail.tail_var)
+                if isinstance(tail, Var):
+                    if prefix == term.prefix and tail.name == term.tail_var:
+                        return term
+                    return OpenListTerm(prefix, tail.name)
+                return OpenListTerm(prefix, term.tail_var)
+            if isinstance(term, GraphTerm):
+                triples = tuple(apply_subst_triple_trail(triple) for triple in term.triples)
+                return term if triples == term.triples else GraphTerm(triples)
+            return term
+
+        def apply_subst_triple_trail(
+            triple: Triple,
+            ground_blanks: bool = False,
+            blank_mapping: dict[str, Blank] | None = None,
+        ) -> Triple:
+            if ground_blanks:
+                return self._instantiate_head_triple(triple, subst_mut, blank_mapping)
+            s = apply_subst_trail(triple.s)
+            p = apply_subst_trail(triple.p)
+            o = apply_subst_trail(triple.o)
+            return triple if s == triple.s and p == triple.p and o == triple.o else Triple(s, p, o)
+
+        comparisons = {
+            "equalTo", "notEqualTo", "greaterThan", "lessThan",
+            "notGreaterThan", "notLessThan", "contains", "startsWith",
+            "endsWith", "matches", "notMatches", "notMember",
+        }
+
+        def unbound_trail(term: Term) -> int:
+            original = term
+            term = deref_trail(term)
+            if isinstance(original, Var) and isinstance(term, GraphTerm):
+                return 0
+            if isinstance(term, Var):
+                return 1
+            if isinstance(term, ListTerm):
+                elems = term.elems
+                size = len(elems)
+                if size == 0:
+                    return 0
+                if size == 1:
+                    return unbound_trail(elems[0])
+                if size == 2:
+                    return unbound_trail(elems[0]) + unbound_trail(elems[1])
+                if size == 3:
+                    return unbound_trail(elems[0]) + unbound_trail(elems[1]) + unbound_trail(elems[2])
+                return sum(unbound_trail(item) for item in elems)
+            if isinstance(term, GraphTerm):
+                return sum(
+                    unbound_trail(triple.s) + unbound_trail(triple.p) + unbound_trail(triple.o)
+                    for triple in term.triples
+                )
+            return 0
+
+        def goal_rank_trail(goal: Triple, pred: Term, handler: Callable[[BuiltinContext], list[Subst]] | None) -> tuple[int, int]:
+            subject_unbound = unbound_trail(goal.s)
+            object_unbound = unbound_trail(goal.o)
+            variables = subject_unbound + object_unbound
+            if not isinstance(pred, Iri):
+                return (0, variables)
+            if handler is None:
+                self._ensure_fact_indexes_current()
+                has_extensional_candidate = bool(self._facts_by_pred.get(self._lookup_key(pred)))
+                has_backward_rule = pred.value in self._backward_predicates
+                if has_backward_rule and not has_extensional_candidate and subject_unbound:
+                    return (1, variables)
+                return (0, variables)
+            if pred.value == "http://www.w3.org/2000/10/swap/list#iterate" and subject_unbound == 0:
+                return (-1, variables)
+            if (
+                pred.value in {
+                    "http://www.w3.org/2000/10/swap/list#append",
+                    "http://www.w3.org/2000/10/swap/list#firstRest",
+                }
+                and object_unbound == 0
+            ):
+                return (-1, variables)
+            local = pred.value.rsplit("#", 1)[-1]
+            if local in {"collectAllIn", "forAllIn"}:
+                return (1, variables)
+            if local in {"includes", "notIncludes"} and isinstance(deref_trail(goal.o), Var):
+                return (3, variables)
+            if local in {"includes", "notIncludes"} and variables:
+                return (1, variables)
+            if pred.value == LOG_NS + "equalTo":
+                left = deref_trail(goal.s)
+                right = deref_trail(goal.o)
+                if not (isinstance(left, Var) and isinstance(right, Var)):
+                    return (-1, variables)
+            if local in comparisons and variables:
+                return (2, variables)
+            if subject_unbound == 0:
+                return (-1, variables)
+            return (2, variables)
+
+        def select_goal_index_trail(current_goals: list[Any]) -> int:
+            for index, goal in enumerate(current_goals):
+                if not isinstance(goal, Triple):
+                    return index
+                predicate = deref_trail(goal.p)
+                handler = get_builtin(predicate.value) if isinstance(predicate, Iri) else None
+                rank = goal_rank_trail(goal, predicate, handler)
+                if handler is not None:
+                    if rank[0] < 0:
+                        return index
+                elif rank[0] == 0:
+                    return index
+            return 0
+
         def occurs(name: str, value: Term) -> bool:
-            value = self.deref(value, subst_mut)
+            value = deref_trail(value)
             if not self._term_needs_substitution(value):
                 return False
             if isinstance(value, Var):
                 return value.name == name
             if isinstance(value, ListTerm):
-                return any(occurs(name, item) for item in value.elems)
+                elems = value.elems
+                size = len(elems)
+                if size == 0:
+                    return False
+                if size == 1:
+                    return occurs(name, elems[0])
+                if size == 2:
+                    return occurs(name, elems[0]) or occurs(name, elems[1])
+                if size == 3:
+                    return occurs(name, elems[0]) or occurs(name, elems[1]) or occurs(name, elems[2])
+                return any(occurs(name, item) for item in elems)
             if isinstance(value, OpenListTerm):
                 return (
                     value.tail_var == name
@@ -1414,8 +1668,8 @@ class Engine:
             return step(0)
 
         def unify_term_trail(a: Term, b: Term) -> bool:
-            a = self.apply_subst(a, subst_mut)
-            b = self.apply_subst(b, subst_mut)
+            a = apply_subst_trail(a)
+            b = apply_subst_trail(b)
             if isinstance(a, Var):
                 return bind_var(a, b)
             if isinstance(b, Var):
@@ -1429,9 +1683,27 @@ class Engine:
             if isinstance(a, Literal) and isinstance(b, Literal):
                 return self.literal_equivalent(a, b)
             if isinstance(a, ListTerm) and isinstance(b, ListTerm):
-                if len(a.elems) != len(b.elems):
+                left = a.elems
+                right = b.elems
+                size = len(left)
+                if size != len(right):
                     return False
-                return all(unify_term_trail(x, y) for x, y in zip(a.elems, b.elems))
+                if size == 0:
+                    return True
+                if size == 1:
+                    return unify_term_trail(left[0], right[0])
+                if size == 2:
+                    return unify_term_trail(left[0], right[0]) and unify_term_trail(left[1], right[1])
+                if size == 3:
+                    return (
+                        unify_term_trail(left[0], right[0])
+                        and unify_term_trail(left[1], right[1])
+                        and unify_term_trail(left[2], right[2])
+                    )
+                for left_item, right_item in zip(left, right):
+                    if not unify_term_trail(left_item, right_item):
+                        return False
+                return True
             if isinstance(a, ListTerm):
                 recovered = self.rdf_collection_to_list(b)
                 if recovered is not None:
@@ -1479,7 +1751,7 @@ class Engine:
         def answer_from_current() -> Subst:
             answer: Subst = {}
             for name in answer_vars:
-                value = self.apply_subst(Var(name), subst_mut)
+                value = apply_subst_trail(Var(name))
                 if not (isinstance(value, Var) and value.name == name):
                     answer[name] = value
             return answer
@@ -1562,7 +1834,7 @@ class Engine:
                         continue
                     body = list(std.conclusion)
                     if frame["goal_was_visited"] and any(
-                        goal_key(self.apply_subst_triple(premise, subst_mut)) in visited_counts
+                        goal_key(apply_subst_triple_trail(premise)) in visited_counts
                         for premise in body
                     ):
                         undo_to(mark)
@@ -1604,8 +1876,8 @@ class Engine:
                 })
                 continue
 
-            selected = self._select_goal_index(goals_now, subst_mut) if reorder_now else 0
-            first = self.apply_subst_triple(goals_now[selected], subst_mut)
+            selected = select_goal_index_trail(goals_now) if reorder_now else 0
+            first = apply_subst_triple_trail(goals_now[selected])
             rest = goals_now[:selected] + goals_now[selected + 1:]
 
             # A registered builtin owns its predicate and does not fall through
@@ -1794,7 +2066,17 @@ class Engine:
             if isinstance(term, Var):
                 return 1
             if isinstance(term, ListTerm):
-                return sum(unbound(item) for item in term.elems)
+                elems = term.elems
+                size = len(elems)
+                if size == 0:
+                    return 0
+                if size == 1:
+                    return unbound(elems[0])
+                if size == 2:
+                    return unbound(elems[0]) + unbound(elems[1])
+                if size == 3:
+                    return unbound(elems[0]) + unbound(elems[1]) + unbound(elems[2])
+                return sum(unbound(item) for item in elems)
             if isinstance(term, GraphTerm):
                 return sum(unbound(tr.s) + unbound(tr.p) + unbound(tr.o) for tr in term.triples)
             return 0
@@ -1804,7 +2086,7 @@ class Engine:
             return (0, variables)
         if get_builtin(pred.value) is None:
             self._ensure_fact_indexes_current()
-            has_extensional_candidate = bool(self._facts_by_pred.get(pred))
+            has_extensional_candidate = bool(self._facts_by_pred.get(self._lookup_key(pred)))
             has_backward_rule = pred.value in self._backward_predicates
             if has_backward_rule and not has_extensional_candidate and unbound(goal.s):
                 # Backward relations conventionally consume their subject and
@@ -1870,8 +2152,24 @@ class Engine:
             return t
         t = self.deref(t, subst)
         if isinstance(t, ListTerm):
-            elems = tuple(self.apply_subst(e, subst) for e in t.elems)
-            return t if elems == t.elems else ListTerm(elems)
+            original = t.elems
+            size = len(original)
+            if size == 0:
+                return t
+            if size == 1:
+                e0 = self.apply_subst(original[0], subst)
+                return t if e0 == original[0] else ListTerm((e0,))
+            if size == 2:
+                e0 = self.apply_subst(original[0], subst)
+                e1 = self.apply_subst(original[1], subst)
+                return t if e0 == original[0] and e1 == original[1] else ListTerm((e0, e1))
+            if size == 3:
+                e0 = self.apply_subst(original[0], subst)
+                e1 = self.apply_subst(original[1], subst)
+                e2 = self.apply_subst(original[2], subst)
+                return t if e0 == original[0] and e1 == original[1] and e2 == original[2] else ListTerm((e0, e1, e2))
+            elems = tuple(self.apply_subst(e, subst) for e in original)
+            return t if elems == original else ListTerm(elems)
         if isinstance(t, OpenListTerm):
             prefix = tuple(self.apply_subst(e, subst) for e in t.prefix)
             tail = self.apply_subst(Var(t.tail_var), subst)
@@ -2141,8 +2439,8 @@ class Engine:
                 firsts = [t.o for t in self.facts if t.s == cur and isinstance(t.p, Iri) and t.p.value == RDF_FIRST]
                 rests = [t.o for t in self.facts if t.s == cur and isinstance(t.p, Iri) and t.p.value == RDF_REST]
             else:
-                firsts = [t.o for t in self._facts_by_ps.get((first_pred, sk), ()) if t.s == cur]
-                rests = [t.o for t in self._facts_by_ps.get((rest_pred, sk), ()) if t.s == cur]
+                firsts = [t.o for t in self._facts_by_ps.get((self._lookup_key(first_pred), sk), ()) if t.s == cur]
+                rests = [t.o for t in self._facts_by_ps.get((self._lookup_key(rest_pred), sk), ()) if t.s == cur]
             if len(firsts) != 1 or len(rests) != 1:
                 return None
             out.append(firsts[0])
