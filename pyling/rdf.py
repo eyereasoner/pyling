@@ -538,51 +538,103 @@ def _normalize_rdf12(
 # rdflib conversion
 # ---------------------------------------------------------------------------
 
+def _rdflib_cache_key(term) -> object | None:
+    if isinstance(term, URIRef):
+        return ("URIRef", str(term))
+    if isinstance(term, BNode):
+        return ("BNode", str(term))
+    if isinstance(term, RdfLiteral):
+        return (
+            "Literal",
+            str(term),
+            str(term.datatype) if term.datatype else None,
+            str(term.language).lower() if term.language else None,
+        )
+    try:
+        hash(term)
+    except TypeError:
+        return None
+    return (type(term), term)
+
+
 def _rdflib_term_to_term(
     term,
     placeholders: dict[str, _Rdf12Placeholder] | None = None,
     resolving: set[str] | None = None,
+    cache: dict[object, Term] | None = None,
 ) -> Term:
+    cache_key: object | None = None
+    if resolving is None:
+        cache_key = _rdflib_cache_key(term)
+        if cache is not None and cache_key is not None and cache_key in cache:
+            return cache[cache_key]
+
     if isinstance(term, URIRef) and placeholders and str(term) in placeholders:
         key = str(term)
         info = placeholders[key]
         if info.kind == "reifier":
-            return Blank(info.blank_label or "_:rdf12_reifier")
+            out = Blank(info.blank_label or "_:rdf12_reifier")
+            if cache is not None and cache_key is not None:
+                cache[cache_key] = out
+            return out
         if info.kind == "triple" and info.triple is not None:
             active = set() if resolving is None else set(resolving)
             if key in active:
                 raise RdfSyntaxError("cyclic RDF 1.2 triple term")
             active.add(key)
             s, p, o = info.triple
-            return GraphTerm(
+            out = GraphTerm(
                 [
                     Triple(
-                        _rdflib_term_to_term(s, placeholders, active),
-                        _rdflib_term_to_term(p, placeholders, active),
-                        _rdflib_term_to_term(o, placeholders, active),
+                        _rdflib_term_to_term(s, placeholders, active, cache),
+                        _rdflib_term_to_term(p, placeholders, active, cache),
+                        _rdflib_term_to_term(o, placeholders, active, cache),
                     )
                 ]
             )
+            if cache is not None and cache_key is not None:
+                cache[cache_key] = out
+            return out
     if isinstance(term, URIRef):
-        return Iri(str(term))
-    if isinstance(term, BNode):
-        return Blank("_:" + str(term))
-    if isinstance(term, RdfLiteral):
+        out = Iri(str(term))
+    elif isinstance(term, BNode):
+        out = Blank("_:" + str(term))
+    elif isinstance(term, RdfLiteral):
         dt = str(term.datatype) if term.datatype else None
         lang = str(term.language).lower() if term.language else None
-        return Literal(str(term), dt, lang)
+        out = Literal(str(term), dt, lang)
     # rdflib RDF-star terms vary by version; keep a structural fallback.
-    if hasattr(term, "subject") and hasattr(term, "predicate") and hasattr(term, "object"):
-        return GraphTerm(
+    elif hasattr(term, "subject") and hasattr(term, "predicate") and hasattr(term, "object"):
+        out = GraphTerm(
             [
                 Triple(
-                    _rdflib_term_to_term(term.subject, placeholders, resolving),
-                    _rdflib_term_to_term(term.predicate, placeholders, resolving),
-                    _rdflib_term_to_term(term.object, placeholders, resolving),
+                    _rdflib_term_to_term(term.subject, placeholders, resolving, cache),
+                    _rdflib_term_to_term(term.predicate, placeholders, resolving, cache),
+                    _rdflib_term_to_term(term.object, placeholders, resolving, cache),
                 )
             ]
         )
-    return Iri(str(term))
+    else:
+        out = Iri(str(term))
+    if cache is not None and cache_key is not None:
+        cache[cache_key] = out
+    return out
+
+
+def term_from_rdflib(term) -> Term:
+    """Convert an RDFLib term into a Pyling term."""
+    return _rdflib_term_to_term(term, cache={})
+
+
+def triple_from_rdflib(triple) -> Triple:
+    """Convert an RDFLib triple-like tuple into a Pyling triple."""
+    cache: dict[object, Term] = {}
+    s, p, o = triple
+    return Triple(
+        _rdflib_term_to_term(s, cache=cache),
+        _rdflib_term_to_term(p, cache=cache),
+        _rdflib_term_to_term(o, cache=cache),
+    )
 
 
 def _term_iris(term: Term) -> Iterator[str]:
@@ -613,20 +665,21 @@ def parse_rdf_graph(graph: Graph | Dataset) -> Document:
     """Convert an RDFLib Graph or Dataset into an Eyeling Document."""
     env = PrefixEnv({})
     triples: list[Triple] = []
+    cache: dict[object, Term] = {}
 
     if isinstance(graph, Dataset):
         default_id = str(graph.default_graph.identifier)
         by_graph: dict[Term | None, list[Triple]] = {}
         for s, p, o, g in graph.quads((None, None, None, None)):
             tr = Triple(
-                _rdflib_term_to_term(s),
-                _rdflib_term_to_term(p),
-                _rdflib_term_to_term(o),
+                _rdflib_term_to_term(s, cache=cache),
+                _rdflib_term_to_term(p, cache=cache),
+                _rdflib_term_to_term(o, cache=cache),
             )
             gid = (
                 None
                 if str(g) == default_id or str(g).endswith("default")
-                else _rdflib_term_to_term(g)
+                else _rdflib_term_to_term(g, cache=cache)
             )
             by_graph.setdefault(gid, []).append(tr)
         for gid, body in by_graph.items():
@@ -638,9 +691,9 @@ def parse_rdf_graph(graph: Graph | Dataset) -> Document:
         for s, p, o in graph:
             triples.append(
                 Triple(
-                    _rdflib_term_to_term(s),
-                    _rdflib_term_to_term(p),
-                    _rdflib_term_to_term(o),
+                    _rdflib_term_to_term(s, cache=cache),
+                    _rdflib_term_to_term(p, cache=cache),
+                    _rdflib_term_to_term(o, cache=cache),
                 )
             )
 
@@ -648,17 +701,46 @@ def parse_rdf_graph(graph: Graph | Dataset) -> Document:
     return Document(env, triples, [], [], [])
 
 
-def _term_to_rdflib_term(term: Term):
+def document_from_rdflib(graph: Graph | Dataset) -> Document:
+    """Convert an RDFLib Graph or Dataset into a Pyling Document."""
+    return parse_rdf_graph(graph)
+
+
+def _term_to_rdflib_term(term: Term, cache: dict[Term, object] | None = None):
+    if cache is not None:
+        cached = cache.get(term)
+        if cached is not None:
+            return cached
     if isinstance(term, Iri):
-        return URIRef(term.value)
-    if isinstance(term, Blank):
+        out = URIRef(term.value)
+    elif isinstance(term, Blank):
         label = term.label[2:] if term.label.startswith("_:") else term.label
-        return BNode(label)
-    if isinstance(term, Literal):
+        out = BNode(label)
+    elif isinstance(term, Literal):
         if term.lang:
-            return RdfLiteral(term.lexical, lang=term.lang)
-        return RdfLiteral(term.lexical, datatype=URIRef(literal_datatype(term)))
-    raise RdfSyntaxError(f"cannot convert {type(term).__name__} to an RDFLib graph term")
+            out = RdfLiteral(term.lexical, lang=term.lang)
+        else:
+            out = RdfLiteral(term.lexical, datatype=URIRef(literal_datatype(term)))
+    else:
+        raise RdfSyntaxError(f"cannot convert {type(term).__name__} to an RDFLib graph term")
+    if cache is not None:
+        cache[term] = out
+    return out
+
+
+def term_to_rdflib(term: Term):
+    """Convert an ordinary Pyling term into an RDFLib term."""
+    return _term_to_rdflib_term(term, {})
+
+
+def triple_to_rdflib(triple: Triple):
+    """Convert an ordinary Pyling triple into an RDFLib triple tuple."""
+    cache: dict[Term, object] = {}
+    return (
+        _term_to_rdflib_term(triple.s, cache),
+        _term_to_rdflib_term(triple.p, cache),
+        _term_to_rdflib_term(triple.o, cache),
+    )
 
 
 def triples_to_rdflib_graph(
@@ -678,15 +760,32 @@ def triples_to_rdflib_graph(
         for name in sorted(prefixes.declared):
             if name in prefixes.map:
                 target.bind(name, URIRef(prefixes.map[name]))
+    cache: dict[Term, object] = {}
     for tr in triples:
         target.add(
             (
-                _term_to_rdflib_term(tr.s),
-                _term_to_rdflib_term(tr.p),
-                _term_to_rdflib_term(tr.o),
+                _term_to_rdflib_term(tr.s, cache),
+                _term_to_rdflib_term(tr.p, cache),
+                _term_to_rdflib_term(tr.o, cache),
             )
         )
     return target
+
+
+def document_to_rdflib(
+    document: Document,
+    *,
+    graph: Graph | None = None,
+    include_input_facts: bool = True,
+) -> Graph:
+    """Convert a Pyling Document's ordinary fact triples into an RDFLib Graph.
+
+    Rules, formulas, lists, open lists, and variables are still rejected by
+    ``triples_to_rdflib_graph`` because they do not have a lossless ordinary
+    RDFLib Graph representation.
+    """
+    triples = document.triples if include_input_facts else []
+    return triples_to_rdflib_graph(triples, document.prefixes, graph=graph)
 
 
 def _format_alias(fmt: str | None) -> str:

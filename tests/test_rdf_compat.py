@@ -1,11 +1,15 @@
 import pytest
-from rdflib import Graph, Namespace, URIRef
+from rdflib import BNode, Graph, Literal as RdfLiteral, Namespace, URIRef
 
 from pyling import (
+    Blank,
     GraphTerm,
+    Iri,
     Literal,
     RdfSyntaxError,
     assert_rdf12_surface_syntax,
+    document_from_rdflib,
+    document_to_rdflib,
     parse_rdf_message_log,
     parse_rdf_graph,
     parse_rdf_text,
@@ -13,6 +17,10 @@ from pyling import (
     reason_graph,
     reason_message_stream,
     reason_stream,
+    term_from_rdflib,
+    term_to_rdflib,
+    triple_from_rdflib,
+    triple_to_rdflib,
 )
 
 
@@ -40,6 +48,57 @@ def test_rdflib_graph_input_is_accepted_directly():
     out = reason(graph, include_input_facts_in_closure=True)
     assert ":a :p :b ." in out
     assert "@prefix foaf:" not in out
+
+
+def test_rdflib_conversion_helpers_are_public_and_round_trip_basic_terms():
+    ex = Namespace("http://example.org/")
+    assert term_from_rdflib(URIRef(ex.a)) == Iri(str(ex.a))
+    assert term_from_rdflib(BNode("b1")) == Blank("_:b1")
+    assert term_from_rdflib(RdfLiteral("chat", lang="NL")) == Literal("chat", lang="nl")
+    assert term_to_rdflib(Iri(str(ex.a))) == URIRef(ex.a)
+
+    triple = triple_from_rdflib((URIRef(ex.a), URIRef(ex.p), RdfLiteral("1")))
+    assert triple.s == Iri(str(ex.a))
+    assert triple.p == Iri(str(ex.p))
+    assert triple.o == Literal("1")
+    assert triple_to_rdflib(triple) == (
+        URIRef(ex.a),
+        URIRef(ex.p),
+        RdfLiteral("1", datatype=URIRef("http://www.w3.org/2001/XMLSchema#string")),
+    )
+
+
+def test_rdflib_graph_conversion_reuses_repeated_terms_per_run():
+    ex = Namespace("http://example.org/")
+    graph = Graph()
+    graph.bind("", ex)
+    graph.add((ex.a, ex.p, ex.shared))
+    graph.add((ex.b, ex.p, ex.shared))
+
+    doc = document_from_rdflib(graph)
+    assert len(doc.triples) == 2
+    assert doc.triples[0].p is doc.triples[1].p
+    assert doc.triples[0].o is doc.triples[1].o
+
+    back = document_to_rdflib(doc)
+    assert (ex.a, ex.p, ex.shared) in back
+    assert (ex.b, ex.p, ex.shared) in back
+
+
+def test_rdflib_conversion_cache_keeps_literal_forms_distinct():
+    ex = Namespace("http://example.org/")
+    graph = Graph()
+    graph.add((ex.plain, ex.p, RdfLiteral("same")))
+    graph.add((
+        ex.typed,
+        ex.p,
+        RdfLiteral("same", datatype=URIRef("http://www.w3.org/2001/XMLSchema#string")),
+    ))
+
+    doc = document_from_rdflib(graph)
+    values = {tr.s.value.rsplit("/", 1)[-1]: tr.o for tr in doc.triples}
+    assert values["plain"] == Literal("same")
+    assert values["typed"] == Literal("same", "http://www.w3.org/2001/XMLSchema#string")
 
 
 def test_reason_result_can_return_rdflib_graph():

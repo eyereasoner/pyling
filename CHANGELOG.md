@@ -15,6 +15,8 @@ versioning while the public package API is still stabilizing.
   Eyeling OWL 2 RL ruleset, neuro-symbolic validation, automatic QUDT
   normalization over RDF Message logs, and an ODRL FORCE compliance case.
 - `owlrl` support in the MobiBench performance harness and CI workflow.
+- Public RDFLib boundary helpers for converting terms, triples, documents, and
+  graphs in both directions without exposing the internal N3 solver model.
 
 ### Changed
 
@@ -27,6 +29,10 @@ versioning while the public package API is still stabilizing.
   interpretation while distinguishing completion, output parity, and
   conformance.
 - Notebook HTML and the notebook index use the Eyereasoner visual style.
+- Backward proof search now uses a mutable substitution with rollback trails,
+  following Eyeling's DFS strategy while preserving Pyling's public term model.
+- RDFLib graph import/export reuses repeated term conversions within each
+  conversion run, reducing boundary overhead without changing solver internals.
 
 ### Fixed
 
@@ -36,6 +42,8 @@ versioning while the public package API is still stabilizing.
   variable scope required by nested rules.
 - Mutually recursive backward rules terminate through ancestor-cycle handling;
   iterative proof search also avoids Python recursion limits on deep inputs.
+- Backward loop-check state is restored before sibling goals, so conjunctions
+  can prove multiple goals through the same recursive helper relation.
 - Constructive `list:firstRest`, variable-predicate lookup, stable memoized
   proof snapshots, bound-input builtin prioritization, and normalized literal
   indexes restore the expected results for the Goldbach, path-discovery,

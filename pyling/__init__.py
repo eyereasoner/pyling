@@ -34,7 +34,21 @@ from .terms import (
     rule_to_primitive,
 )
 from .parser import N3SyntaxError, parse_n3, parse_sources
-from .rdf import RdfSyntaxError, parse_rdf_graph, parse_rdf_text, parse_rdf_message_log, iter_rdf_message_documents, assert_rdf12_surface_syntax, triples_to_rdflib_graph
+from .rdf import (
+    RdfSyntaxError,
+    document_from_rdflib,
+    document_to_rdflib,
+    iter_rdf_message_documents,
+    parse_rdf_graph,
+    parse_rdf_message_log,
+    parse_rdf_text,
+    assert_rdf12_surface_syntax,
+    term_from_rdflib,
+    term_to_rdflib,
+    triple_from_rdflib,
+    triple_to_rdflib,
+    triples_to_rdflib_graph,
+)
 from .printing import term_to_n3, triple_to_n3, triples_to_n3
 
 __all__ = [
@@ -68,11 +82,17 @@ __all__ = [
     "parse_sources",
     "N3SyntaxError",
     "RdfSyntaxError",
+    "document_from_rdflib",
+    "document_to_rdflib",
     "parse_rdf_graph",
     "parse_rdf_text",
     "parse_rdf_message_log",
     "iter_rdf_message_documents",
     "assert_rdf12_surface_syntax",
+    "term_from_rdflib",
+    "term_to_rdflib",
+    "triple_from_rdflib",
+    "triple_to_rdflib",
     "triples_to_rdflib_graph",
     "term_to_n3",
     "triple_to_n3",
