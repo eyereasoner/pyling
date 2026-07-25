@@ -28,6 +28,16 @@ versioning while the public package API is still stabilizing.
   goal-ranking paths, with small-list fast paths and arithmetic builtin
   shortcuts to avoid redundant Python recursion in hot examples such as
   `takeuchi.n3` and `kaprekar-6174.n3`.
+- Partially bound list-subject lookups now use an Eyeling-style per-shape
+  index instead of rescanning the predicate bucket for every bound-value
+  combination, restoring fast `relational-cube-lookup.n3` behavior.
+- Single-premise forward-rule agenda dispatch now has exact
+  predicate/subject/object buckets and a direct simple-head instantiation path,
+  reducing over-firing and generic substitution overhead in broad closure cases
+  such as `deep-taxonomy-*.n3`.
+- Fact index scope snapshots are no longer recorded after every derived fact;
+  scoped fact-list caches are captured only when the engine actually switches
+  fact scopes.
 - The example-scoped Queens builtin now parallelizes independent first-row
   branches on platforms with cheap `fork` support, while remaining outside the
   default builtin registry.
@@ -36,6 +46,10 @@ versioning while the public package API is still stabilizing.
   rendered output and avoiding implementation-specific count differences.
 - `PERFORMANCE.md` now includes a full per-case table for all Eyeling examples,
   with network-enabled reruns for the HTTP-dependent cases.
+- Fact lookup now keeps a fast key set for fully indexable triples, de-duplicates
+  agenda entries by rule index instead of hashing complete rule objects, and
+  builds nested list-component indexes on demand. This reduces broad closure,
+  scoped RDF Message, relational-list lookup, and recursive tabling overhead.
 
 ### Fixed
 

@@ -1,6 +1,6 @@
 # Performance comparison
 
-Benchmarks were regenerated on 2026-07-24 from the current Pyling working tree. `kronecker.n3` was rerun on 2026-07-25 after fixing broad query enumeration of live rules. The report is intentionally practical: which cases completed, whether selected output counts matched, and where Pyling is faster or slower than Eyeling and other Python reasoners.
+Benchmarks were regenerated on 2026-07-24 from the current Pyling working tree. Focused reruns on 2026-07-25 updated `kronecker.n3`, `relational-cube-lookup.n3`, `deep-taxonomy-10000.n3`, `rdf-message-cold-chain-recall.n3`, `kaprekar-6174.n3`, and `takeuchi.n3` after targeted engine fixes. The report is intentionally practical: which cases completed, whether selected output counts matched, and where Pyling is faster or slower than Eyeling and other Python reasoners.
 
 ## Test environment
 
@@ -41,9 +41,9 @@ For examples that use `log:query`, the comparison counts selected query output r
 | Metric over 223 exact-count normal cases | Pyling | Eyeling |
 |---|---:|---:|
 | Median per case | 9.42 ms | 18.46 ms |
-| Arithmetic mean | 267.79 ms | 74.79 ms |
-| Total measured time | 59.718 s | 16.677 s |
-| Slowest normal case | `deep-taxonomy-100000.n3` (15.191 s) | `deep-taxonomy-100000.n3` (2.473 s) |
+| Arithmetic mean | 243.62 ms | 74.52 ms |
+| Total measured time | 54.327 s | 16.618 s |
+| Slowest normal case | `deep-taxonomy-100000.n3` (12.735 s) | `deep-taxonomy-100000.n3` (2.403 s) |
 
 Among the 223 exact-count normal cases, Pyling was faster on 159 cases and Eyeling was faster on 64. The median Pyling/Eyeling ratio was 0.565, so Pyling is about 1.77x faster on the typical exact-count example. The total runtime still favors Eyeling because large recursive/search programs dominate the aggregate.
 
@@ -53,35 +53,35 @@ Among the 223 exact-count normal cases, Pyling was faster on 159 cases and Eyeli
 | Sudoku | 16.97 ms | 21.73 ms | Pyling 1.3x faster |
 | Queens | 759.05 ms | 291.80 ms | Pyling 2.6x slower |
 | Fibonacci | 3,068.98 ms | 1,352.96 ms | Pyling 2.3x slower |
-| Deep Taxonomy 100000 | 15,191.30 ms | 2,472.82 ms | Pyling 6.1x slower |
+| Deep Taxonomy 100000 | 12,735.33 ms | 2,403.47 ms | Pyling 5.3x slower |
 | Goldbach 1000 | 2,876.05 ms | 1,462.88 ms | Pyling 2.0x slower |
 | Path Discovery | 3,176.62 ms | 854.72 ms | Pyling 3.7x slower |
-| Takeuchi | 7,312.45 ms | 957.46 ms | Pyling 7.6x slower |
+| Takeuchi | 6,563.97 ms | 831.69 ms | Pyling 7.9x slower |
 | Collatz 1000 | 1,523.55 ms | 539.86 ms | Pyling 2.8x slower |
-| Kaprekar 6174 | 8,451.44 ms | 2,059.77 ms | Pyling 4.1x slower |
-| Relational Cube Lookup | 3,052.80 ms | 90.30 ms | Pyling 33.8x slower |
+| Kaprekar 6174 | 7,618.21 ms | 2,022.30 ms | Pyling 3.8x slower |
+| Relational Cube Lookup | 298.30 ms | 81.68 ms | Pyling 3.7x slower |
 
 ### Clearly slow cases
 
 | Case | Pyling | Eyeling | Pyling/Eyeling |
 |---|---:|---:|---:|
-| `relational-cube-lookup.n3` | 3,052.80 ms | 90.30 ms | 33.8x |
 | `shacl-conforms.n3` | 791.23 ms | 36.17 ms | 21.9x |
 | `reaching-out.n3` | 121.03 ms | 6.75 ms | 17.9x |
-| `rdf-message-cold-chain-recall.n3` | 787.50 ms | 75.12 ms | 10.5x |
-| `takeuchi.n3` | 7,312.45 ms | 957.46 ms | 7.6x |
-| `deep-taxonomy-100000.n3` | 15,191.30 ms | 2,472.82 ms | 6.1x |
+| `rdf-message-cold-chain-recall.n3` | 673.69 ms | 70.07 ms | 9.6x |
+| `takeuchi.n3` | 6,563.97 ms | 831.69 ms | 7.9x |
 | `dining-philosophers.n3` | 793.33 ms | 130.33 ms | 6.1x |
 | `doctor-advice-work-conflict.n3` | 180.74 ms | 30.86 ms | 5.9x |
+| `deep-taxonomy-100000.n3` | 12,735.33 ms | 2,403.47 ms | 5.3x |
 | `transitive-closure.n3` | 2,100.03 ms | 394.63 ms | 5.3x |
 | `rdf-message-ldes-incremental.n3` | 351.77 ms | 72.45 ms | 4.9x |
-| `deep-taxonomy-10000.n3` | 1,312.03 ms | 271.23 ms | 4.8x |
 | `odrl-policy-evaluation-snaf.n3` | 121.30 ms | 26.62 ms | 4.6x |
-| `kaprekar-6174.n3` | 8,451.44 ms | 2,059.77 ms | 4.1x |
+| `kaprekar-6174.n3` | 7,618.21 ms | 2,022.30 ms | 3.8x |
+| `deep-taxonomy-10000.n3` | 1,009.07 ms | 265.19 ms | 3.8x |
 | `path-discovery.n3` | 3,176.62 ms | 854.72 ms | 3.7x |
 | `genetic-algorithm.n3` | 1,143.64 ms | 315.55 ms | 3.6x |
+| `relational-cube-lookup.n3` | 298.30 ms | 81.68 ms | 3.7x |
 
-The largest remaining gaps are concentrated in broad data closure, relational list lookups, RDF Message scope handling, and recursive arithmetic/search. The newest trail-local substitutions and builtin fast paths reduce Python interpreter recursion overhead, but Eyeling still benefits from a deeper all-internal integer term representation and array-backed solver state. The regenerated relational-cube row shows a clear regression that should be investigated separately because that workload previously benefited from the list-component index.
+The largest remaining gaps are concentrated in HTTP/scoped-formula workloads, RDF Message scope handling, broad data closure, and recursive arithmetic/search. The 2026-07-25 focused reruns removed the obvious relational-list regression with a reusable list-subject index, reduced broad-closure overhead with exact agenda buckets and rule-index de-duplication, and cut duplicate detection cost with a fast ground-triple key set. Recursive arithmetic cases such as `takeuchi.n3` and `kaprekar-6174.n3` still favor Eyeling because its solver uses a lower-cost all-internal integer term representation and array-backed mutable state.
 
 ## Focused comparison with FuXi
 
@@ -95,12 +95,12 @@ These three examples were measured three times after one warmup. FuXi is include
 
 ## Relational cube lookup
 
-`relational-cube-lookup.n3` performs 2,000 two-key lookups over 3,375 facts represented as three-element lists. This regenerated run shows Pyling is again much slower than Eyeling here, so the list-component indexing path needs follow-up profiling.
+`relational-cube-lookup.n3` performs 2,000 two-key lookups over 3,375 facts represented as three-element lists. Pyling now builds a reusable per-shape subject-list index, following Eyeling's lookup strategy: all two-key lookups with the same list shape share one predicate-bucket scan instead of rescanning all relation facts per lookup.
 
 | Reasoner | Median | Minimum | Maximum |
 |---|---:|---:|---:|
-| Pyling | 2.869 s | 2.832 s | 2.953 s |
-| Eyeling | 0.084 s | 0.080 s | 0.089 s |
+| Pyling | 0.303 s | 0.301 s | 0.327 s |
+| Eyeling | 0.087 s | 0.082 s | 0.092 s |
 
 ## MobiBench OWL 2 RL
 
@@ -164,8 +164,8 @@ The 273 positive-entailment and inconsistency inputs in the MobiBench OWL 2 RL a
 | `deep-taxonomy-10.n3` | ok | ok | 3.74 | 8.53 | 0.44x | 41/39 | 41/39 |
 | `deep-taxonomy-100.n3` | ok | ok | 14.82 | 14.12 | 1.05x | 311/309 | 311/309 |
 | `deep-taxonomy-1000.n3` | ok | ok | 129.86 | 47.04 | 2.76x | 3011/3009 | 3011/3009 |
-| `deep-taxonomy-10000.n3` | ok | ok | 1,312.03 | 271.23 | 4.84x | 30011/30009 | 30011/30009 |
-| `deep-taxonomy-100000.n3` | ok | ok | 15,191.30 | 2,472.82 | 6.14x | 300011/300009 | 300011/300009 |
+| `deep-taxonomy-10000.n3` | ok | ok | 1,009.07 | 265.19 | 3.80x | 30011/30009 | 30011/30009 |
+| `deep-taxonomy-100000.n3` | ok | ok | 12,735.33 | 2,403.47 | 5.30x | 300011/300009 | 300011/300009 |
 | `delfour.n3` | ok | ok | 15.49 | 23.03 | 0.67x | 127/36 | 127/36 |
 | `derived-backward-rule.n3` | ok | ok | 1.51 | 10.75 | 0.14x | 4/2 | 4/2 |
 | `derived-backward-rule-2.n3` | ok | ok | 1.83 | 6.78 | 0.27x | 4/4 | 4/4 |
@@ -231,7 +231,7 @@ The 273 positive-entailment and inconsistency inputs in the MobiBench OWL 2 RL a
 | `jade-eigen-loom.n3` | ok | ok | 22.37 | 23.65 | 0.95x | 79/57 | 79/57 |
 | `jsonterm.n3` | ok | ok | 1.57 | 6.02 | 0.26x | 6/1 | 6/1 |
 | `jsonterm-advanced.n3` | ok | ok | 3.31 | 7.61 | 0.43x | 27/6 | 27/6 |
-| `kaprekar-6174.n3` | ok | ok | 8,451.44 | 2,059.77 | 4.10x | 9990/9990 | 9990/9990 |
+| `kaprekar-6174.n3` | ok | ok | 7,618.21 | 2,022.30 | 3.77x | 9990/9990 | 9990/9990 |
 | `knowledge-engineering-alignment-flow.n3` | ok | ok | 4.24 | 8.04 | 0.53x | 33/19 | 33/19 |
 | `kronecker.n3` | ok | ok | 6.35 | 20.54 | 0.31x | 69/69 | 69/69 |
 | `liar.n3` | failed | failed |  |  |  |  |  |
@@ -290,14 +290,14 @@ The 273 positive-entailment and inconsistency inputs in the MobiBench OWL 2 RL a
 | `rc-discharge-envelope.n3` | ok | ok | 8.62 | 16.87 | 0.51x | 20/7 | 20/7 |
 | `rdf-dataset.n3` | ok | ok | 6.43 | 9.62 | 0.67x | 1/1 | 1/1 |
 | `rdf-list.n3` | ok | ok | 1.52 | 7.63 | 0.20x | 2/1 | 2/1 |
-| `rdf-message-cold-chain-recall.n3` | ok | ok | 787.50 | 75.12 | 10.48x | 1018/671 | 1018/671 |
+| `rdf-message-cold-chain-recall.n3` | ok | ok | 673.69 | 70.07 | 9.61x | 1018/671 | 1018/671 |
 | `rdf-message-flow.n3` | ok | ok | 44.04 | 33.46 | 1.32x | 94/57 | 94/57 |
 | `rdf-message-ldes-incremental.n3` | ok | ok | 351.77 | 72.45 | 4.86x | 821/530 | 821/530 |
 | `rdf-message-microgrid.n3` | ok | ok | 18.65 | 22.58 | 0.83x | 56/26 | 56/26 |
 | `rdf-message-window-repair.n3` | ok | ok | 21.32 | 29.65 | 0.72x | 102/63 | 102/63 |
 | `rdf-messages.n3` | ok | ok | 16.31 | 25.92 | 0.63x | 43/20 | 43/20 |
 | `reaching-out.n3` | ok | ok | 121.03 | 6.75 | 17.92x | 2/2 | 2/2 |
-| `relational-cube-lookup.n3` | ok | ok | 3,052.80 | 90.30 | 33.81x | 2/2 | 2/2 |
+| `relational-cube-lookup.n3` | ok | ok | 298.30 | 81.68 | 3.65x | 2/2 | 2/2 |
 | `reordering.n3` | ok | ok | 1.75 | 9.68 | 0.18x | 3/1 | 3/1 |
 | `resto.n3` | ok | ok | 13.03 | 34.72 | 0.38x | 71/66 | 71/66 |
 | `ruby-runge-workshop.n3` | ok | ok | 44.80 | 31.15 | 1.44x | 33/13 | 33/13 |
@@ -319,7 +319,7 @@ The 273 positive-entailment and inconsistency inputs in the MobiBench OWL 2 RL a
 | `sudoku.n3` | ok | ok | 16.97 | 21.73 | 0.78x | 46/43 | 46/43 |
 | `superdense-coding.n3` | ok | ok | 37.81 | 35.78 | 1.06x | 21/4 | 21/4 |
 | `tabling-query-cache-stress.n3` | ok | ok | 21.99 | 30.09 | 0.73x | 24/24 | 24/24 |
-| `takeuchi.n3` | ok | ok | 7,312.45 | 957.46 | 7.64x | 1004/1003 | 1004/1003 |
+| `takeuchi.n3` | ok | ok | 6,563.97 | 831.69 | 7.89x | 1004/1003 | 1004/1003 |
 | `tgate-approx.n3` | ok | ok | 165.06 | 83.39 | 1.98x | 336/336 | 336/336 |
 | `theory-diff.n3` | ok | ok | 8.28 | 11.41 | 0.73x | 6/4 | 6/4 |
 | `time.n3` | ok | ok | 1.74 | 7.62 | 0.23x | 7/6 | 7/6 |

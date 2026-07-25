@@ -66,6 +66,7 @@ class _AgendaEntry:
     o_key: Any | None
     fast_subject_var: str | None = None
     fast_object_var: str | None = None
+    simple_head_value_side: str | None = None
 
 
 class InferenceFuseError(RuntimeError):
@@ -123,7 +124,8 @@ class Engine:
         self.options = dict(options or {})
         self.prefixes = doc.prefixes
         self.facts: list[Triple] = list(doc.triples)
-        self._fact_set: set[Triple] = set(doc.triples)
+        self._fact_set: set[Triple] = set()
+        self._fact_lookup_keys: set[tuple[Any, Any, Any]] = set()
         self._facts_by_pred: dict[Any, list[Triple]] = {}
         self._facts_by_ps: dict[tuple[Any, Any], list[Triple]] = {}
         self._facts_by_po: dict[tuple[Any, Any], list[Triple]] = {}
@@ -138,6 +140,8 @@ class Engine:
             dict[tuple[Any, Any], list[Triple]],
             dict[tuple[Any, str, tuple[int, ...], Any], list[Triple]],
             list[Triple],
+            set[Triple],
+            set[tuple[Any, Any, Any]],
         ]] = {}
         self._scoped_fact_lists: dict[tuple[Triple, ...], list[Triple]] = {}
         self._deep_list_subject_indexes: dict[
@@ -179,6 +183,7 @@ class Engine:
         self._agenda_by_pred: dict[Any, list[_AgendaEntry]] = {}
         self._agenda_by_ps: dict[tuple[Any, Any], list[_AgendaEntry]] = {}
         self._agenda_by_po: dict[tuple[Any, Any], list[_AgendaEntry]] = {}
+        self._agenda_by_pso: dict[tuple[Any, Any, Any], list[_AgendaEntry]] = {}
         self._agenda_all_entries: list[_AgendaEntry] = []
         self._fresh_counter = 0
         self._std_counter = 0
@@ -318,10 +323,12 @@ class Engine:
 
     def _index_fact(self, tr: Triple) -> None:
         if isinstance(tr.p, Var):
+            self._fact_set.add(tr)
             self._var_pred_facts.append(tr)
             return
         pk = self._lookup_key(tr.p)
         if pk is None:
+            self._fact_set.add(tr)
             self._var_pred_facts.append(tr)
             return
         self._facts_by_pred.setdefault(pk, []).append(tr)
@@ -331,10 +338,10 @@ class Engine:
         ok = self._lookup_key(tr.o)
         if ok is not None:
             self._facts_by_po.setdefault((pk, ok), []).append(tr)
-        for side, term in (("s", tr.s), ("o", tr.o)):
-            for path, key in self._list_component_keys(term):
-                index_key = (pk, side, path, key)
-                self._facts_by_list_component.setdefault(index_key, []).append(tr)
+        if sk is not None and ok is not None:
+            self._fact_lookup_keys.add((sk, pk, ok))
+        else:
+            self._fact_set.add(tr)
 
     def _list_component_keys(
         self, term: Term, path: tuple[int, ...] = ()
@@ -349,6 +356,28 @@ class Engine:
             if isinstance(item, ListTerm):
                 yield from self._list_component_keys(item, item_path)
 
+    def _list_component_bucket(
+        self,
+        predicate: Any,
+        side: str,
+        path: tuple[int, ...],
+        key: Any,
+        pred_bucket: list[Triple],
+    ) -> list[Triple]:
+        index_key = (predicate, side, path, key)
+        cached = self._facts_by_list_component.get(index_key)
+        if cached is not None:
+            return cached
+        bucket: list[Triple] = []
+        for fact in pred_bucket:
+            term = fact.s if side == "s" else fact.o
+            for fact_path, fact_key in self._list_component_keys(term):
+                if fact_path == path and fact_key == key:
+                    bucket.append(fact)
+                    break
+        self._facts_by_list_component[index_key] = bucket
+        return bucket
+
     def _capture_fact_index_state(self) -> tuple[
         list[Triple],
         dict[Term, list[Triple]],
@@ -356,6 +385,8 @@ class Engine:
         dict[tuple[Term, Term], list[Triple]],
         dict[tuple[Term, str, tuple[int, ...], Any], list[Triple]],
         list[Triple],
+        set[Triple],
+        set[tuple[Any, Any, Any]],
     ]:
         return (
             self.facts,
@@ -364,6 +395,8 @@ class Engine:
             self._facts_by_po,
             self._facts_by_list_component,
             self._var_pred_facts,
+            self._fact_set,
+            self._fact_lookup_keys,
         )
 
     def _restore_fact_index_state(
@@ -375,6 +408,8 @@ class Engine:
             dict[tuple[Term, Term], list[Triple]],
             dict[tuple[Term, str, tuple[int, ...], Any], list[Triple]],
             list[Triple],
+            set[Triple],
+            set[tuple[Any, Any, Any]],
         ],
     ) -> None:
         (
@@ -384,6 +419,8 @@ class Engine:
             self._facts_by_po,
             self._facts_by_list_component,
             self._var_pred_facts,
+            self._fact_set,
+            self._fact_lookup_keys,
         ) = state
         self._indexed_facts_obj_id = id(self.facts)
         self._indexed_facts_len = len(self.facts)
@@ -402,6 +439,8 @@ class Engine:
         self._facts_by_po = {}
         self._facts_by_list_component = {}
         self._var_pred_facts = []
+        self._fact_set = set()
+        self._fact_lookup_keys = set()
         self._deep_list_subject_indexes = {}
         for tr in self.facts:
             self._index_fact(tr)
@@ -430,7 +469,6 @@ class Engine:
             kept.append(tr)
         if changed:
             self.facts = kept
-            self._fact_set = set(kept)
             self._rebuild_fact_indexes()
 
     def _ensure_fact_indexes_current(self) -> None:
@@ -447,6 +485,24 @@ class Engine:
                 self._restore_fact_index_state(cached)
             else:
                 self._rebuild_fact_indexes()
+
+    def _fact_lookup_key(self, tr: Triple) -> tuple[Any, Any, Any] | None:
+        sk = self._lookup_key(tr.s)
+        if sk is None:
+            return None
+        pk = self._lookup_key(tr.p)
+        if pk is None:
+            return None
+        ok = self._lookup_key(tr.o)
+        if ok is None:
+            return None
+        return (sk, pk, ok)
+
+    def _has_fact(self, tr: Triple) -> bool:
+        key = self._fact_lookup_key(tr)
+        if key is not None:
+            return key in self._fact_lookup_keys
+        return tr in self._fact_set
 
     def _candidate_facts(self, goal: Triple) -> Iterable[Triple]:
         self._ensure_fact_indexes_current()
@@ -479,12 +535,15 @@ class Engine:
             candidates.append(bucket)
         component_candidates: list[list[Triple]] = []
         for side, term in (("s", goal.s), ("o", goal.o)):
-            if side == "s" and used_deep_subject:
+            if side == "s" and (used_deep_subject or sk is not None):
+                continue
+            if side == "o" and ok is not None:
                 continue
             for path, key in self._list_component_keys(term):
-                index_key = (pk, side, path, key)
-                bucket = self._facts_by_list_component.get(index_key)
-                if bucket is None:
+                if pred_bucket is None:
+                    return list(self._var_pred_facts)
+                bucket = self._list_component_bucket(pk, side, path, key, pred_bucket)
+                if not bucket:
                     return list(self._var_pred_facts)
                 component_candidates.append(bucket)
         if component_candidates:
@@ -545,25 +604,18 @@ class Engine:
                 if self._lookup_key(fact_subject) is None:
                     fallback.append(fact)
                 continue
-            matched = True
             needs_fallback = False
-            for position, key in zip(positions, keys):
+            fact_keys: list[Any] = []
+            for position in positions:
                 fact_key = self._lookup_key(fact_subject.elems[position])
                 if fact_key is None:
                     needs_fallback = True
-                    continue
-                if fact_key != key:
-                    matched = False
                     break
-            if not matched:
-                continue
+                fact_keys.append(fact_key)
             if needs_fallback or self._lookup_key(fact_subject) is None:
                 fallback.append(fact)
             else:
-                fact_keys = tuple(
-                    self._lookup_key(fact_subject.elems[position]) for position in positions
-                )
-                by_key.setdefault(fact_keys, []).append(fact)
+                by_key.setdefault(tuple(fact_keys), []).append(fact)
         self._deep_list_subject_indexes[cache_key] = (by_key, fallback)
         exact = by_key.get(tuple(keys), [])
         if fallback:
@@ -572,7 +624,8 @@ class Engine:
 
     def add_fact(self, tr: Triple, inferred: bool = True) -> bool:
         # owl:differentFrom self is false in Eyeling style tests only when queried through sameAs? Keep as normal fact.
-        if tr in self._fact_set:
+        self._ensure_fact_indexes_current()
+        if self._has_fact(tr):
             return False
         if (
             not any(term_has_vars(term) for term in (tr.s, tr.p, tr.o))
@@ -582,14 +635,12 @@ class Engine:
                 if self._fact_terms_equal(tr.s, existing.s) and self._fact_terms_equal(
                     tr.p, existing.p
                 ) and self._fact_terms_equal(tr.o, existing.o):
-                    return False
-        self._fact_set.add(tr)
-        self._ensure_fact_indexes_current()
+                        return False
         self.facts.append(tr)
+        self._facts_by_list_component = {}
         self._index_fact(tr)
         self._indexed_facts_len = len(self.facts)
         self._indexed_facts_obj_id = id(self.facts)
-        self._fact_index_states[(self._indexed_facts_obj_id, self._indexed_facts_len)] = self._capture_fact_index_state()
         if self._agenda_active:
             self._agenda_queue.append(tr)
         if inferred:
@@ -793,9 +844,11 @@ class Engine:
         self._agenda_all_entries.append(entry)
         if entry.s_key is None and entry.o_key is None:
             self._agenda_by_pred.setdefault(p, []).append(entry)
-        if entry.s_key is not None:
+        elif entry.s_key is not None and entry.o_key is not None:
+            self._agenda_by_pso.setdefault((p, entry.s_key, entry.o_key), []).append(entry)
+        elif entry.s_key is not None:
             self._agenda_by_ps.setdefault((p, entry.s_key), []).append(entry)
-        if entry.o_key is not None:
+        elif entry.o_key is not None:
             self._agenda_by_po.setdefault((p, entry.o_key), []).append(entry)
 
     def _build_single_premise_agenda(self) -> None:
@@ -803,6 +856,7 @@ class Engine:
         self._agenda_by_pred.clear()
         self._agenda_by_ps.clear()
         self._agenda_by_po.clear()
+        self._agenda_by_pso.clear()
         self._agenda_all_entries.clear()
         for i, rule in enumerate(self.forward_rules):
             if not self._is_fast_single_premise_rule(rule):
@@ -810,17 +864,43 @@ class Engine:
             goal = rule.premise[0]
             s_key = self._lookup_key(goal.s)
             o_key = self._lookup_key(goal.o)
+            fast_subject_var = goal.s.name if isinstance(goal.s, Var) and o_key is not None else None
+            fast_object_var = goal.o.name if isinstance(goal.o, Var) and s_key is not None else None
+            simple_head_value_side = self._simple_agenda_head_value_side(
+                rule,
+                fast_subject_var,
+                fast_object_var,
+            )
             entry = _AgendaEntry(
                 rule,
                 i,
                 goal,
                 s_key,
                 o_key,
-                goal.s.name if isinstance(goal.s, Var) and o_key is not None else None,
-                goal.o.name if isinstance(goal.o, Var) and s_key is not None else None,
+                fast_subject_var,
+                fast_object_var,
+                simple_head_value_side,
             )
             self._agenda_indexed_rules.add(rule)
             self._add_agenda_entry(entry)
+
+    def _simple_agenda_head_value_side(
+        self,
+        rule: Rule,
+        fast_subject_var: str | None,
+        fast_object_var: str | None,
+    ) -> str | None:
+        fast_var = fast_subject_var or fast_object_var
+        if fast_var is None:
+            return None
+        for head in rule.conclusion:
+            for term in (head.s, head.p, head.o):
+                if isinstance(term, Var):
+                    if term.name != fast_var:
+                        return None
+                elif term_has_vars(term):
+                    return None
+        return "s" if fast_subject_var is not None else "o"
 
     def _agenda_candidates_for_fact(self, fact: Triple) -> list[_AgendaEntry]:
         if isinstance(fact.p, Var):
@@ -829,31 +909,56 @@ class Engine:
         pk = self._lookup_key(fact.p)
         if pk is None:
             return list(self._agenda_all_entries)
+        sk = self._lookup_key(fact.s)
+        ok = self._lookup_key(fact.o)
+        if (
+            (sk is None and term_has_vars(fact.s))
+            or (ok is None and term_has_vars(fact.o))
+        ):
+            return [
+                entry
+                for entry in self._agenda_all_entries
+                if self._lookup_key(entry.goal.p) == pk
+            ]
         buckets: list[list[_AgendaEntry]] = []
         broad = self._agenda_by_pred.get(pk)
         if broad:
             buckets.append(broad)
-        sk = self._lookup_key(fact.s)
+        if sk is not None and ok is not None:
+            bucket = self._agenda_by_pso.get((pk, sk, ok))
+            if bucket:
+                buckets.append(bucket)
         if sk is not None:
             bucket = self._agenda_by_ps.get((pk, sk))
             if bucket:
                 buckets.append(bucket)
-        ok = self._lookup_key(fact.o)
         if ok is not None:
             bucket = self._agenda_by_po.get((pk, ok))
             if bucket:
                 buckets.append(bucket)
         out: list[_AgendaEntry] = []
-        seen_rules: set[Rule] = set()
+        seen_rule_indexes: set[int] = set()
         for bucket in buckets:
             for entry in bucket:
-                if entry.rule in seen_rules:
+                if entry.rule_index in seen_rule_indexes:
                     continue
-                seen_rules.add(entry.rule)
+                seen_rule_indexes.add(entry.rule_index)
                 out.append(entry)
         return out
 
     def _fire_agenda_rule(self, entry: _AgendaEntry, fact: Triple) -> bool:
+        if entry.simple_head_value_side is not None:
+            value = fact.s if entry.simple_head_value_side == "s" else fact.o
+            changed = False
+            for head in entry.rule.conclusion:
+                out = Triple(
+                    value if isinstance(head.s, Var) else head.s,
+                    value if isinstance(head.p, Var) else head.p,
+                    value if isinstance(head.o, Var) else head.o,
+                )
+                if self.add_fact(out, inferred=True):
+                    changed = True
+            return changed
         if entry.fast_subject_var is not None:
             subst = {entry.fast_subject_var: fact.s}
         elif entry.fast_object_var is not None:
@@ -947,7 +1052,7 @@ class Engine:
             if rule.is_fuse:
                 continue
             strict_ground_head = self._rule_has_strict_ground_head(rule)
-            if strict_ground_head and all(head in self._fact_set for head in rule.conclusion):
+            if strict_ground_head and all(self._has_fact(head) for head in rule.conclusion):
                 continue
             input_signature = self._rule_input_signature(rule)
             if self._rule_input_signatures.get(rule) == input_signature:
