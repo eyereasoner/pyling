@@ -1,6 +1,6 @@
 # Performance comparison
 
-Benchmarks were regenerated on 2026-07-24 from the current Pyling working tree. The report is intentionally practical: which cases completed, whether selected output counts matched, and where Pyling is faster or slower than Eyeling and other Python reasoners.
+Benchmarks were regenerated on 2026-07-24 from the current Pyling working tree. `kronecker.n3` was rerun on 2026-07-25 after fixing broad query enumeration of live rules. The report is intentionally practical: which cases completed, whether selected output counts matched, and where Pyling is faster or slower than Eyeling and other Python reasoners.
 
 ## Test environment
 
@@ -19,7 +19,7 @@ Timers include parsing, reasoning, and closure construction. Process and module 
 
 ## Eyeling example suite
 
-All 225 top-level N3 examples from the local Eyeling checkout were run once. Matching TriG inputs were included where present. Example-specific builtins are loaded explicitly for both engines: Eyeling uses `../eyeling/examples/builtin/*.js`, and Pyling uses `examples/builtin/*.py` for the matching example name. The HTTP-dependent cases were rerun with network access and override the sandboxed broad-sweep rows.
+All 225 top-level N3 examples from the local Eyeling checkout were run once. Matching TriG inputs were included where present. Example-specific builtins are loaded explicitly for both engines: Eyeling uses `../eyeling/examples/builtin/*.js`, and Pyling uses `examples/builtin/*.py` for the matching example name. The HTTP-dependent cases and `kronecker.n3` use focused reruns that override the broad-sweep rows.
 
 ### Completion and counts
 
@@ -28,24 +28,24 @@ All 225 top-level N3 examples from the local Eyeling checkout were run once. Mat
 | Same normal or inference-fuse outcome | 225/225 |
 | Both reasoners returned normally | 223 |
 | Both raised the expected inference fuse | 2 |
-| Exact selected-output count after HTTP reruns | 222 |
-| Remaining count differences | 1 |
+| Exact selected-output count after focused reruns | 223 |
+| Remaining count differences | 0 |
 
 The inference-fuse cases are `fuse.n3`, `liar.n3`; their nonzero exits are expected results.
-The remaining count difference is `kronecker.n3`. It derives `77/77` in Pyling and `69/69` in Eyeling on this run, so it should be treated as an open semantic-parity item rather than a performance-only difference.
+There are no remaining selected-output count differences in this run.
 
 For examples that use `log:query`, the comparison counts selected query output rather than implementation-internal saturated stores.
 
 ### Runtime summary
 
-| Metric over 222 exact-count normal cases | Pyling | Eyeling |
+| Metric over 223 exact-count normal cases | Pyling | Eyeling |
 |---|---:|---:|
-| Median per case | 9.84 ms | 18.41 ms |
-| Arithmetic mean | 268.97 ms | 75.03 ms |
-| Total measured time | 59.712 s | 16.657 s |
+| Median per case | 9.42 ms | 18.46 ms |
+| Arithmetic mean | 267.79 ms | 74.79 ms |
+| Total measured time | 59.718 s | 16.677 s |
 | Slowest normal case | `deep-taxonomy-100000.n3` (15.191 s) | `deep-taxonomy-100000.n3` (2.473 s) |
 
-Among the 222 exact-count normal cases, Pyling was faster on 158 cases and Eyeling was faster on 64. The median Pyling/Eyeling ratio was 0.572, so Pyling is about 1.75x faster on the typical exact-count example. The total runtime still favors Eyeling because large recursive/search programs dominate the aggregate.
+Among the 223 exact-count normal cases, Pyling was faster on 159 cases and Eyeling was faster on 64. The median Pyling/Eyeling ratio was 0.565, so Pyling is about 1.77x faster on the typical exact-count example. The total runtime still favors Eyeling because large recursive/search programs dominate the aggregate.
 
 | Representative exact-count example | Pyling | Eyeling | Interpretation |
 |---|---:|---:|---|
@@ -116,7 +116,7 @@ The 273 positive-entailment and inconsistency inputs in the MobiBench OWL 2 RL a
 
 ## Full Eyeling Example Results
 
-`Py/Ey ratio` is lower-is-better for Pyling. The `facts/derived` columns show final fact and derived counts for ordinary closure mode, and selected query-output counts for examples that use `log:query`. HTTP rows use the network-enabled rerun.
+`Py/Ey ratio` is lower-is-better for Pyling. The `facts/derived` columns show final fact and derived counts for ordinary closure mode, and selected query-output counts for examples that use `log:query`. HTTP and Kronecker rows use focused reruns.
 
 | Case | Pyling status | Eyeling status | Pyling ms | Eyeling ms | Py/Ey ratio | Py facts/derived | Ey facts/derived |
 |---|---|---|---:|---:|---:|---:|---:|
@@ -233,7 +233,7 @@ The 273 positive-entailment and inconsistency inputs in the MobiBench OWL 2 RL a
 | `jsonterm-advanced.n3` | ok | ok | 3.31 | 7.61 | 0.43x | 27/6 | 27/6 |
 | `kaprekar-6174.n3` | ok | ok | 8,451.44 | 2,059.77 | 4.10x | 9990/9990 | 9990/9990 |
 | `knowledge-engineering-alignment-flow.n3` | ok | ok | 4.24 | 8.04 | 0.53x | 33/19 | 33/19 |
-| `kronecker.n3` | ok | ok | 6.55 | 19.69 | 0.33x | 77/77 | 69/69 |
+| `kronecker.n3` | ok | ok | 6.35 | 20.54 | 0.31x | 69/69 | 69/69 |
 | `liar.n3` | failed | failed |  |  |  |  |  |
 | `light-eaters.n3` | ok | ok | 3.52 | 10.42 | 0.34x | 30/13 | 30/13 |
 | `list-builtins-tests.n3` | ok | ok | 3.20 | 7.97 | 0.40x | 11/11 | 11/11 |

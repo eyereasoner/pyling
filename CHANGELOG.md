@@ -39,6 +39,10 @@ versioning while the public package API is still stabilizing.
 
 ### Fixed
 
+- Broad variable-predicate queries no longer enumerate ambient live rules as
+  ordinary facts. Explicit `log:implies` and `log:impliedBy` meta-rule matching
+  still works, while `kronecker.n3` now matches Eyeling's selected output count.
+
 **Full Changelog**: https://github.com/eyereasoner/pyling/compare/0.1.3...0.1.4
 
 ## [0.1.3]

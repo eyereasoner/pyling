@@ -140,7 +140,9 @@ class Engine:
             list[Triple],
         ]] = {}
         self._scoped_fact_lists: dict[tuple[Triple, ...], list[Triple]] = {}
-        self._deep_list_subject_candidates: dict[tuple[Any, ...], list[Triple]] = {}
+        self._deep_list_subject_indexes: dict[
+            tuple[Any, ...], tuple[dict[tuple[Any, ...], list[Triple]], list[Triple]]
+        ] = {}
         for _tr in self.facts:
             self._index_fact(_tr)
         self._indexed_facts_obj_id = id(self.facts)
@@ -400,6 +402,7 @@ class Engine:
         self._facts_by_po = {}
         self._facts_by_list_component = {}
         self._var_pred_facts = []
+        self._deep_list_subject_indexes = {}
         for tr in self.facts:
             self._index_fact(tr)
         self._indexed_facts_obj_id = id(self.facts)
@@ -525,12 +528,15 @@ class Engine:
             predicate,
             len(subject.elems),
             tuple(positions),
-            tuple(keys),
         )
-        cached = self._deep_list_subject_candidates.get(cache_key)
+        cached = self._deep_list_subject_indexes.get(cache_key)
         if cached is not None:
-            return cached
-        exact: list[Triple] = []
+            index, fallback = cached
+            exact = index.get(tuple(keys), [])
+            if fallback:
+                return exact + fallback
+            return exact
+        by_key: dict[tuple[Any, ...], list[Triple]] = {}
         fallback: list[Triple] = []
         wanted_len = len(subject.elems)
         for fact in pred_bucket:
@@ -554,10 +560,15 @@ class Engine:
             if needs_fallback or self._lookup_key(fact_subject) is None:
                 fallback.append(fact)
             else:
-                exact.append(fact)
-        bucket = exact + fallback
-        self._deep_list_subject_candidates[cache_key] = bucket
-        return bucket
+                fact_keys = tuple(
+                    self._lookup_key(fact_subject.elems[position]) for position in positions
+                )
+                by_key.setdefault(fact_keys, []).append(fact)
+        self._deep_list_subject_indexes[cache_key] = (by_key, fallback)
+        exact = by_key.get(tuple(keys), [])
+        if fallback:
+            return exact + fallback
+        return exact
 
     def add_fact(self, tr: Triple, inferred: bool = True) -> bool:
         # owl:differentFrom self is false in Eyeling style tests only when queried through sameAs? Keep as normal fact.
@@ -690,8 +701,6 @@ class Engine:
                 rules = self.backward_rules
             else:
                 return
-        elif isinstance(predicate, Var):
-            rules = (*self.forward_rules, *self.backward_rules)
         else:
             return
         for rule in rules:

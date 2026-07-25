@@ -26,6 +26,7 @@ from pyling import (
 )
 from pyling.engine import Engine
 from pyling.parser import parse_n3
+from pyling.terms import LOG_IMPLIES
 
 EX = "http://example.org/"
 ROOT = Path(__file__).resolve().parents[1]
@@ -234,6 +235,18 @@ def test_rules_are_matchable_as_log_implies_facts():
 { ?premise log:implies ?conclusion. } => { :result :containsRule true. }.
 ''')
     assert ":result :containsRule true ." in out
+
+
+def test_broad_variable_predicate_query_does_not_enumerate_live_rules():
+    result = reason_stream('''
+@prefix : <http://example.org/> .
+@prefix log: <http://www.w3.org/2000/10/swap/log#> .
+:source :p :value.
+{ :source :p :value. } => { :target :p :value. }.
+{ ?s ?p ?o. } log:query { ?s ?p ?o. }.
+''')
+    assert len(result.query_triples) == 2
+    assert all(getattr(tr.p, "value", None) != LOG_IMPLIES for tr in result.query_triples)
 
 
 def test_explicit_formula_includes_does_not_see_ambient_live_rules():
