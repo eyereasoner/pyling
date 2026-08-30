@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/pyling-n3.svg)](https://pypi.org/project/pyling-n3/)
 [![Python versions](https://img.shields.io/pypi/pyversions/pyling-n3.svg)](https://pypi.org/project/pyling-n3/)
-[![API documentation](https://img.shields.io/badge/docs-pydoc-blue.svg)](https://eyereasoner.github.io/pyling/api/pyling.html)
+[![Documentation](https://img.shields.io/badge/docs-Read%20the%20Docs-8CA1AF.svg?logo=readthedocs)](https://eyereasoner.github.io/pyling/api/)
 [![License](https://img.shields.io/pypi/l/pyling-n3.svg)](LICENSE)
 
 `pyling` is a Python port of the [Eyeling](https://github.com/eyereasoner/eyeling)
