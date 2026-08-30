@@ -52,10 +52,13 @@ jobs:
           cp docs/notebooks/*.ipynb site/notebooks/
           cp docs/notebooks/README.md site/notebooks/README.md
 
-      - name: Upload notebook HTML artifact
+      - name: Build pyling API documentation
+        run: python tools/build_pydocs.py site/api
+
+      - name: Upload documentation site artifact
         uses: actions/upload-artifact@v4
         with:
-          name: notebook-site
+          name: documentation-site
           path: site
 
       - name: Upload GitHub Pages artifact
