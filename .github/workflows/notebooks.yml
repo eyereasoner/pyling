@@ -1,4 +1,4 @@
-name: Notebook docs
+name: Documentation
 
 on:
   push:
@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  build-notebooks:
-    name: Build notebooks
+  build-docs:
+    name: Build documentation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -38,22 +38,8 @@ jobs:
           --ExecutePreprocessor.timeout=120
           docs/notebooks/*.ipynb
 
-      - name: Build notebook HTML
-        run: |
-          mkdir -p site/notebooks site/assets
-          jupyter nbconvert \
-            --to html \
-            --template eyereasoner \
-            --TemplateExporter.extra_template_basedirs=docs/notebooks \
-            --output-dir site/notebooks \
-            docs/notebooks/*.ipynb
-          cp docs/notebooks/index.html site/index.html
-          cp docs/notebooks/assets/eyereasoner.css site/assets/eyereasoner.css
-          cp docs/notebooks/*.ipynb site/notebooks/
-          cp docs/notebooks/README.md site/notebooks/README.md
-
-      - name: Build pyling API documentation
-        run: sphinx-build --fail-on-warning --keep-going -b html docs/api site/api
+      - name: Build Material documentation
+        run: mkdocs build --strict
 
       - name: Upload documentation site artifact
         uses: actions/upload-artifact@v4
@@ -70,7 +56,7 @@ jobs:
   deploy-pages:
     name: Deploy GitHub Pages
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: build-notebooks
+    needs: build-docs
     runs-on: ubuntu-latest
     permissions:
       pages: write

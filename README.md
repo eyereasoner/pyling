@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/pyling-n3.svg)](https://pypi.org/project/pyling-n3/)
 [![Python versions](https://img.shields.io/pypi/pyversions/pyling-n3.svg)](https://pypi.org/project/pyling-n3/)
-[![Documentation](https://img.shields.io/badge/docs-Read%20the%20Docs-8CA1AF.svg?logo=readthedocs)](https://eyereasoner.github.io/pyling/api/)
+[![Documentation](https://img.shields.io/badge/docs-Material%20for%20MkDocs-526CFE.svg?logo=materialformkdocs&logoColor=white)](https://eyereasoner.github.io/pyling/)
 [![License](https://img.shields.io/pypi/l/pyling-n3.svg)](LICENSE)
 
 `pyling` is a Python port of the [Eyeling](https://github.com/eyereasoner/eyeling)
@@ -193,9 +193,9 @@ python -m pip install -e ".[docs]"
 jupyter lab docs/notebooks
 ```
 
-GitHub Actions executes the notebooks and converts them to HTML in the
-`Notebook docs` workflow. Pull requests upload the generated `notebook-site`
-artifact; pushes to `main` also publish the same `site/` output through GitHub
+GitHub Actions executes the notebooks, then Material for MkDocs renders them
+alongside the generated Python API reference. Pull requests upload the complete
+`documentation-site` artifact; pushes to `main` also publish it through GitHub
 Pages when Pages is enabled for GitHub Actions.
 
 ## RDF and RDF 1.2 compatibility
