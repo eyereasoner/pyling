@@ -1,0 +1,97 @@
+site_name: pyling
+site_description: Python implementation of the Eyeling Notation3 reasoner
+site_url: https://eyereasoner.github.io/pyling/
+repo_url: https://github.com/eyereasoner/pyling
+repo_name: eyereasoner/pyling
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2026 Eyereasoner contributors
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.suggest
+    - toc.follow
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+nav:
+  - Home: index.md
+  - Tutorials:
+      - notebooks/index.md
+      - RDFLib reasoning: notebooks/01-rdflib-reasoning.ipynb
+      - OWL-style rules: notebooks/02-owl-style-rules.ipynb
+      - Neuro-symbolic validation: notebooks/03-neuro-symbolic-validation.ipynb
+      - QUDT message logs: notebooks/04-qudt-message-log.ipynb
+      - ODRL FORCE compliance: notebooks/05-odrl-force-compliance.ipynb
+  - Reference:
+      - reference/index.md
+      - Public API: reference/pyling.md
+      - Inference engine: reference/engine.md
+      - Built-ins: reference/builtins.md
+      - N3 parser: reference/parser.md
+      - RDF compatibility: reference/rdf.md
+      - Fact stores: reference/store.md
+      - Term model: reference/terms.md
+      - N3 rendering: reference/printing.md
+      - HTTP dereferencing: reference/deref.md
+      - Command-line interface: reference/cli.md
+  - Changelog: https://github.com/eyereasoner/pyling/blob/main/CHANGELOG.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.] 
+          options:
+            docstring_style: google
+            heading_level: 2
+            members_order: source
+            merge_init_into_class: true
+            separate_signature: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_signature_annotations: true
+            signature_crossrefs: true
+  - mkdocs-jupyter:
+      execute: false
+      include_source: true
+      ignore_h1_titles: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+watch:
+  - pyling
